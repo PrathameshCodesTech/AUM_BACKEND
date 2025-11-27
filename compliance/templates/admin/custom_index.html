@@ -1,0 +1,32 @@
+{% extends "admin/index.html" %}
+{% load i18n static %}
+
+{% block extrahead %}
+{{ block.super }}
+<style>
+.compliance-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin: 20px 0;
+}
+.stat-card {
+    background: white;
+    padding: 15px;
+    border-radius: 5px;
+    border-left: 4px solid #007bff;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.stat-card h3 {
+    margin: 0;
+    font-size: 14px;
+    color: #6c757d;
+}
+.stat-card p {
+    margin: 5px 0 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: #495057;
+}
+</style>
+{% endblock %}
