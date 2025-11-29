@@ -1,113 +1,137 @@
-# accounts/services/sms_service.py
+# accounts/services.py
 import requests
-from urllib.parse import urlencode
+import urllib.parse
 from django.conf import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+def format_phone_for_route_mobile(phone: str) -> str:
+    """
+    Format phone number for Route Mobile API.
+    Returns phone with +91 prefix for Indian numbers.
+    """
+    # Remove any existing + or spaces
+    clean_phone = ''.join(filter(str.isdigit, phone))
+    
+    # Handle Indian mobile numbers
+    if len(clean_phone) == 10:
+        # 10 digits = Indian mobile number, add +91
+        return f"+91{clean_phone}"
+    elif len(clean_phone) == 12 and clean_phone.startswith('91'):
+        # Already has 91 prefix, add +
+        return f"+{clean_phone}"
+    elif len(clean_phone) == 13 and clean_phone.startswith('091'):
+        # Has 091 prefix, convert to +91
+        return f"+91{clean_phone[3:]}"
+    else:
+        # Unknown format, return as-is with + if not present
+        if not phone.startswith('+'):
+            return f"+{clean_phone}"
+        return phone
+
+
 class RouteMobileSMS:
-    """
-    Route Mobile SMS Gateway Integration
-    Handles OTP and transactional SMS
-    """
-
+    """Route Mobile SMS Gateway Integration - Friend's Working Config"""
+    
     def __init__(self):
-        self.username = settings.ROUTE_MOBILE_USERNAME
-        self.password = settings.ROUTE_MOBILE_PASSWORD
-        self.server_url = settings.ROUTE_MOBILE_SERVER
-        self.entity_id = settings.ROUTE_MOBILE_ENTITY_ID
-        self.template_id = settings.ROUTE_MOBILE_TEMPLATE_ID
-        self.sender_id = settings.ROUTE_MOBILE_SENDER_ID
-        self.is_test_mode = settings.ROUTE_MOBILE_TEST_MODE
-
+        self.config = settings.ROUTE_MOBILE_SMS_CONFIG
+        self.is_test_mode = getattr(settings, 'ROUTE_MOBILE_TEST_MODE', True)
+    
     def send_otp(self, phone, otp):
         """
         Send OTP via Route Mobile SMS Gateway
-
+        Using friend's exact working implementation
+        
         Args:
-            phone (str): Phone number with country code (e.g., +919876543210)
-            otp (str): 6-digit OTP
-
+            phone (str): Phone number (will be formatted to +91XXXXXXXXXX)
+            otp (str): 6-digit OTP code
+            
         Returns:
             dict: {
                 'success': bool,
                 'message_id': str or None,
-                'error': str or None
+                'error': str or None,
+                'status': str
             }
         """
-        # Format phone number
-        if not phone.startswith('+'):
-            phone = '+91' + phone.lstrip('0')
-
-        # Create message
-        message = f"Your OTP for AssetKart is {otp}. Valid for 5 minutes. Do not share with anyone."
-
-        # TEST MODE - Print to console
+        logger.info(f"📱 SMS: Attempting to send OTP to {phone}")
+        
+        # TEST MODE
         if self.is_test_mode:
-            logger.info(f"📱 [TEST MODE] Sending OTP to {phone}")
             logger.info(f"📱 [TEST MODE] OTP: {otp}")
-            logger.info(f"📱 [TEST MODE] Message: {message}")
-
+            logger.info(f"📱 [TEST MODE] Phone: {phone}")
             return {
                 'success': True,
                 'message_id': f'TEST_{phone}_{otp}',
                 'error': None,
-                'status': 'TEST_MODE'
+                'status': 'TEST_MODE',
+                'otp': otp  # Return OTP in test mode for easy testing
             }
-
-        # PRODUCTION MODE - Call Route Mobile API
+        
+        # PRODUCTION MODE - Use friend's exact implementation
         try:
-            # Build API URL
+            # Format phone number with +91 prefix
+            formatted_phone = format_phone_for_route_mobile(phone)
+            logger.info(f"📱 Phone formatted: {phone} -> {formatted_phone}")
+            
+            # EXACT message from friend's working template
+            message = f"Dear User, Please complete your registration using the One-Time Password {otp}. Thank You! Powered by DIGIELVES TECH WIZARDS PRIVATE LIMITED"
+            
+            # EXACT parameters from friend's config
             params = {
-                'username': self.username,
-                'password': self.password,
-                'type': '5',  # Plain text
-                'dlr': '1',   # Enable delivery report
-                'destination': phone,
-                'source': self.sender_id,
-                'message': message,
-                'entityid': self.entity_id,
-                'tempid': self.template_id,
+                "username": self.config["USERNAME"],
+                "password": self.config["PASSWORD"],
+                "type": self.config["TYPE"],        # Type 5 (ISO-8859-1)
+                "dlr": self.config["DLR"],          # DLR 1 (delivery report)
+                "destination": formatted_phone,      # +91XXXXXXXXXX format
+                "source": self.config["SOURCE"],    # VBCONN
+                "message": message,
+                "entityid": self.config["ENTITY_ID"],
+                "tempid": self.config["TEMPLATE_ID"],
             }
-
-            # Construct full URL
-            api_url = f"{self.server_url}/bulksms/bulksms?{urlencode(params)}"
-
-            logger.info(f"📱 Sending OTP to {phone} via Route Mobile")
-
-            # Make API call
-            response = requests.get(api_url, timeout=10)
-
-            # Parse response
+            
+            logger.info(f"📱 SMS params: {params}")
+            
+            # Build URL with query parameters
+            encoded_params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            url = f"{self.config['BASE_URL']}?{encoded_params}"
+            
+            logger.info(f"📱 Making HTTPS request to Route Mobile...")
+            
+            # Make API call with SSL verification
+            response = requests.get(url, timeout=30, verify=True)
+            
+            logger.info(f"📱 Response - Status: {response.status_code}, Text: {response.text}")
+            
             response_text = response.text.strip()
-
+            
             # Success response: 1701|<phone>:<message_id>
             if response_text.startswith('1701'):
                 parts = response_text.split('|')
-                if len(parts) > 1:
-                    message_id = parts[1].split(
-                        ':')[1] if ':' in parts[1] else parts[1]
-
-                    logger.info(
-                        f"✅ OTP sent successfully. Message ID: {message_id}")
-
-                    return {
-                        'success': True,
-                        'message_id': message_id,
-                        'error': None,
-                        'status': 'SENT'
-                    }
-
+                message_id = 'UNKNOWN'
+                
+                if len(parts) > 1 and ':' in parts[1]:
+                    message_id = parts[1].split(':')[1]
+                elif len(parts) > 1:
+                    message_id = parts[1]
+                
+                logger.info(f"✅ SMS sent successfully! Message ID: {message_id}")
+                
+                return {
+                    'success': True,
+                    'message_id': message_id,
+                    'error': None,
+                    'status': 'SENT'
+                }
+            
             # Error handling
-            error_code = response_text.split(
-                '|')[0] if '|' in response_text else response_text
+            error_code = response_text.split('|')[0] if '|' in response_text else response_text
             error_message = self._get_error_message(error_code)
-
-            logger.error(
-                f"❌ Failed to send OTP: {error_message} (Code: {error_code})")
-
+            
+            logger.error(f"❌ SMS failed: {error_message} (Code: {error_code})")
+            
             return {
                 'success': False,
                 'message_id': None,
@@ -115,39 +139,30 @@ class RouteMobileSMS:
                 'status': 'FAILED',
                 'error_code': error_code
             }
-
+            
         except requests.exceptions.Timeout:
             logger.error("❌ Route Mobile API timeout")
             return {
                 'success': False,
                 'message_id': None,
-                'error': 'SMS gateway timeout. Please try again.',
+                'error': 'SMS gateway timeout',
                 'status': 'TIMEOUT'
             }
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Route Mobile API error: {str(e)}")
-            return {
-                'success': False,
-                'message_id': None,
-                'error': 'SMS service temporarily unavailable.',
-                'status': 'ERROR'
-            }
-
+        
         except Exception as e:
-            logger.error(f"❌ Unexpected error: {str(e)}")
+            logger.error(f"❌ SMS error: {str(e)}")
             return {
                 'success': False,
                 'message_id': None,
-                'error': 'Failed to send OTP. Please try again.',
+                'error': f'Failed to send SMS: {str(e)}',
                 'status': 'ERROR'
             }
-
+    
     def _get_error_message(self, error_code):
         """Map Route Mobile error codes to user-friendly messages"""
         error_map = {
             '1702': 'Invalid request parameters',
-            '1703': 'Authentication failed',
+            '1703': 'Authentication failed - check credentials',
             '1704': 'Invalid message type',
             '1705': 'Invalid message content',
             '1706': 'Invalid phone number',
@@ -162,72 +177,5 @@ class RouteMobileSMS:
             '1051': 'Invalid DLT template ID',
             '1052': 'Invalid DLT entity ID',
         }
-
-        return error_map.get(error_code, f'Failed to send SMS (Error: {error_code})')
-
-    def send_transactional_sms(self, phone, message, template_id=None):
-        """
-        Send transactional SMS (non-OTP)
-
-        Args:
-            phone (str): Phone number
-            message (str): Message content
-            template_id (str): Optional template ID (defaults to main template)
-
-        Returns:
-            dict: Same as send_otp
-        """
-        if not phone.startswith('+'):
-            phone = '+91' + phone.lstrip('0')
-
-        if self.is_test_mode:
-            logger.info(f"📱 [TEST MODE] Sending SMS to {phone}")
-            logger.info(f"📱 [TEST MODE] Message: {message}")
-            return {
-                'success': True,
-                'message_id': f'TEST_{phone}',
-                'error': None
-            }
-
-        try:
-            params = {
-                'username': self.username,
-                'password': self.password,
-                'type': '5',
-                'dlr': '1',
-                'destination': phone,
-                'source': self.sender_id,
-                'message': message,
-                'entityid': self.entity_id,
-                'tempid': template_id or self.template_id,
-            }
-
-            api_url = f"{self.server_url}/bulksms/bulksms?{urlencode(params)}"
-            response = requests.get(api_url, timeout=10)
-            response_text = response.text.strip()
-
-            if response_text.startswith('1701'):
-                parts = response_text.split('|')
-                message_id = parts[1].split(':')[1] if len(
-                    parts) > 1 and ':' in parts[1] else 'UNKNOWN'
-
-                return {
-                    'success': True,
-                    'message_id': message_id,
-                    'error': None
-                }
-
-            error_code = response_text.split('|')[0]
-            return {
-                'success': False,
-                'message_id': None,
-                'error': self._get_error_message(error_code)
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to send SMS: {str(e)}")
-            return {
-                'success': False,
-                'message_id': None,
-                'error': 'Failed to send SMS'
-            }
+        
+        return error_map.get(error_code, f'SMS failed (Error: {error_code})')

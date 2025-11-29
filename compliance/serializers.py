@@ -155,26 +155,36 @@ class PANVerifySerializer(serializers.Serializer):
 
 class BankVerifySerializer(serializers.Serializer):
     """Verify bank account details"""
-    account_number = serializers.CharField(
+    id_number = serializers.CharField(
         max_length=20,
-        required=True,
-        help_text="Bank account number"
+        required=False,
+        allow_blank=True,
+        help_text="Bank account number (for Surepass API)"
     )
-    ifsc_code = serializers.CharField(
+    ifsc = serializers.CharField(
         max_length=11,
         min_length=11,
-        required=True,
-        help_text="11-character IFSC code"
+        required=False,
+        allow_blank=True,
+        help_text="11-character IFSC code (for Surepass API)"
+    )
+    ifsc_details = serializers.BooleanField(
+        default=True,
+        required=False,
+        help_text="Get bank details from IFSC"
     )
     
-    def validate_account_number(self, value):
-        """Validate account number"""
-        if not value.isdigit():
+    def validate_id_number(self, value):
+        """Validate account number (id_number field)"""
+        if value and not value.isdigit():
             raise serializers.ValidationError("Account number must contain only digits")
         return value
     
-    def validate_ifsc_code(self, value):
+    def validate_ifsc(self, value):
         """Validate IFSC format: AAAA0999999"""
+        if not value:
+            return value
+            
         import re
         value = value.upper()
         
@@ -185,32 +195,56 @@ class BankVerifySerializer(serializers.Serializer):
             )
         return value
     
-    def create(self, validated_data):
-        """Verify bank account via Surepass API"""
-        account_number = validated_data['account_number']
-        ifsc_code = validated_data['ifsc_code']
+    def validate(self, data):
+        """Validate that both fields are provided together or both skipped"""
+        id_number = data.get('id_number', '')
+        ifsc = data.get('ifsc', '')
         
+        # If one is provided, both must be provided
+        if (id_number and not ifsc) or (ifsc and not id_number):
+            raise serializers.ValidationError(
+                "Both account number and IFSC code are required for bank verification"
+            )
+        
+        return data
+    
+    def save(self):
+        """Verify bank account via Surepass API"""
+        id_number = self.validated_data.get('id_number', '')
+        ifsc = self.validated_data.get('ifsc', '')
+        
+        # If no data provided, skip bank verification
+        if not id_number or not ifsc:
+            return {
+                'success': True,
+                'message': 'Bank verification skipped',
+                'data': {},
+                'kyc_updated': False
+            }
+        
+        # Verify via Surepass
         kyc_service = SurepassKYC()
-        result = kyc_service.verify_bank_account(account_number, ifsc_code)
+        result = kyc_service.verify_bank_account(id_number, ifsc)
         
         if not result['success']:
-            raise serializers.ValidationError(result['message'])
+            raise serializers.ValidationError(result.get('error', 'Bank verification failed'))
         
         # Update KYC record
         user = self.context.get('request').user
         kyc, created = KYC.objects.get_or_create(user=user)
         
-        bank_data = result['data']
+        bank_data = result.get('data', {})
         
-        kyc.account_number = account_number
-        kyc.ifsc_code = ifsc_code
-        kyc.account_holder_name = bank_data.get('account_name')
+        # Store bank details
+        kyc.account_number = id_number
+        kyc.ifsc_code = ifsc
+        kyc.account_holder_name = bank_data.get('name_at_bank') or bank_data.get('full_name')
         kyc.bank_name = bank_data.get('bank_name')
-        kyc.account_type = bank_data.get('account_type')
         kyc.bank_verified = True
         kyc.bank_verified_at = timezone.now()
-        kyc.bank_api_response = result['data']
+        kyc.bank_api_response = bank_data
         
+        # Update KYC status if pending
         if kyc.status == 'pending':
             kyc.status = 'under_review'
         
@@ -219,7 +253,15 @@ class BankVerifySerializer(serializers.Serializer):
         logger.info(f"✅ Bank account verified and stored for user: {user.username}")
         
         return {
-            **result,
+            'success': True,
+            'message': 'Bank account verified successfully',
+            'data': {
+                'account_number': id_number[-4:].rjust(len(id_number), '*'),  # Masked
+                'ifsc': ifsc,
+                'account_holder_name': kyc.account_holder_name,
+                'bank_name': kyc.bank_name,
+                'verified': True
+            },
             'kyc_updated': True
         }
 

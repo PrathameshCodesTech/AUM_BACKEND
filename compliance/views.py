@@ -20,6 +20,7 @@ from .serializers import (
 from accounts.permissions import HasPermission
 import logging
 from .serializers import AadhaarPDFUploadSerializer
+from rest_framework import serializers  # 👈 ADD THIS LINE
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,34 @@ class AadhaarPDFUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     
     def post(self, request):
+        from django.utils import timezone
+        from datetime import timedelta
+        from compliance.models import KYC
+        
+        # Check retry limits
+        try:
+            kyc = KYC.objects.get(user=request.user)
+            
+            # Check if user has exceeded retry limit
+            if kyc.aadhaar_retry_count >= 5:
+                # Check if 10 minutes have passed since last retry
+                if kyc.aadhaar_last_retry_at:
+                    time_since_retry = timezone.now() - kyc.aadhaar_last_retry_at
+                    if time_since_retry < timedelta(minutes=10):
+                        remaining_time = 10 - int(time_since_retry.total_seconds() / 60)
+                        return Response({
+                            'success': False,
+                            'error': 'retry_limit_exceeded',
+                            'message': f'Maximum retry limit reached. Please try again after {remaining_time} minutes.',
+                            'retry_after': remaining_time
+                        }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                    else:
+                        # Reset retry count after 10 minutes
+                        kyc.aadhaar_retry_count = 0
+                        kyc.save()
+        except KYC.DoesNotExist:
+            pass  # KYC will be created in serializer
+        
         serializer = AadhaarPDFUploadSerializer(data=request.data)
         
         if not serializer.is_valid():
@@ -48,6 +77,12 @@ class AadhaarPDFUploadView(APIView):
         try:
             result = serializer.verify(request.user)
             
+            # Reset retry count on success
+            kyc = KYC.objects.get(user=request.user)
+            kyc.aadhaar_retry_count = 0
+            kyc.aadhaar_last_retry_at = None
+            kyc.save()
+            
             return Response({
                 'success': True,
                 'message': 'Aadhaar verified successfully',
@@ -56,7 +91,24 @@ class AadhaarPDFUploadView(APIView):
             }, status=status.HTTP_200_OK)
             
         except serializers.ValidationError as e:
-            logger.error(f"❌ Aadhaar verification error: {e.detail}")
+            # Increment retry count on failure
+            try:
+                kyc = KYC.objects.get(user=request.user)
+                kyc.aadhaar_retry_count += 1
+                kyc.aadhaar_last_retry_at = timezone.now()
+                kyc.save()
+                
+                retries_left = 5 - kyc.aadhaar_retry_count
+                
+                logger.error(f"❌ Aadhaar verification error: {e.detail}")
+                return Response({
+                    'success': False,
+                    'message': str(e.detail),
+                    'retries_left': retries_left if retries_left > 0 else 0
+                }, status=status.HTTP_400_BAD_REQUEST)
+            except KYC.DoesNotExist:
+                pass
+                
             return Response({
                 'success': False,
                 'message': str(e.detail)

@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from .services.wallet_service import WalletService
 from .serializers import WalletSerializer, TransactionSerializer,CreateInvestmentSerializer,InvestmentSerializer 
-from .models import Wallet
+from .models import Wallet, Investment  # 👈 ADD Investment HERE!
 from decimal import Decimal  # ←
 from .services.investment_service import InvestmentService
 
@@ -107,25 +107,31 @@ class TransactionHistoryView(APIView):
             'data': serializer.data
         }, status=status.HTTP_200_OK)
     
-
-
 class CreateInvestmentView(APIView):
     """
-    POST /api/investments/create/
+    POST /api/wallet/investments/create/
     Create new investment
     """
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"📥 Received investment request: {request.data}")
+        
         serializer = CreateInvestmentSerializer(data=request.data)
         
         if not serializer.is_valid():
+            logger.error(f"❌ Serializer validation failed: {serializer.errors}")
             return Response({
                 'success': False,
                 'errors': serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
+            logger.info(f"✅ Serializer valid, creating investment...")
+            
             investment = InvestmentService.create_investment(
                 user=request.user,
                 property_obj=serializer.validated_data['property'],
@@ -133,47 +139,86 @@ class CreateInvestmentView(APIView):
                 units_count=serializer.validated_data['units_count']
             )
             
+            logger.info(f"✅ Investment service returned: {investment.investment_id}")
+            
+            # Serialize the response
+            investment_data = InvestmentSerializer(investment, context={'request': request}).data
+            
+            logger.info(f"✅ Sending success response")
+            
             return Response({
                 'success': True,
                 'message': 'Investment created successfully. Pending admin approval.',
-                'data': InvestmentSerializer(investment, context={'request': request}).data
+                'data': investment_data
             }, status=status.HTTP_201_CREATED)
             
         except Exception as e:
+            logger.error(f"❌ Exception in view: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            
             return Response({
                 'success': False,
                 'message': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
 
-
 class MyInvestmentsView(APIView):
     """
-    GET /api/investments/my-investments/
+    GET /api/wallet/investments/my-investments/
     Get user's investments
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        investments = InvestmentService.get_user_investments(request.user)
-        serializer = InvestmentSerializer(investments, many=True, context={'request': request})
-        
-        return Response({
-            'success': True,
-            'data': serializer.data
-        }, status=status.HTTP_200_OK)
+        try:
+            # 👇 FIXED: Query directly instead of using service method
+            investments = Investment.objects.filter(
+                customer=request.user,
+                is_deleted=False
+            ).select_related('property').order_by('-created_at')
+            
+            serializer = InvestmentSerializer(
+                investments, 
+                many=True, 
+                context={'request': request}
+            )
+            
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'count': investments.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ Error fetching investments: {str(e)}")
+            
+            return Response({
+                'success': False,
+                'message': f'Failed to fetch investments: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class InvestmentDetailView(APIView):
     """
-    GET /api/investments/{id}/details/
+    GET /api/wallet/investments/{id}/details/
     Get investment details
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request, investment_id):
         try:
-            investment = InvestmentService.get_investment_detail(investment_id, request.user)
-            serializer = InvestmentSerializer(investment, context={'request': request})
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                is_deleted=False
+            )
+            
+            serializer = InvestmentSerializer(
+                investment, 
+                context={'request': request}
+            )
             
             return Response({
                 'success': True,
@@ -185,3 +230,12 @@ class InvestmentDetailView(APIView):
                 'success': False,
                 'message': 'Investment not found'
             }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ Error fetching investment detail: {str(e)}")
+            
+            return Response({
+                'success': False,
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

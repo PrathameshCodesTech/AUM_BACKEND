@@ -71,6 +71,13 @@ class KYC(TimestampedModel, SoftDeleteModel):
     verified_at = models.DateTimeField(blank=True, null=True)
     verified_by = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='verified_kycs')
     rejection_reason = models.TextField(blank=True, null=True)
+
+
+    # Retry tracking
+    aadhaar_retry_count = models.IntegerField(default=0)
+    aadhaar_last_retry_at = models.DateTimeField(null=True, blank=True)
+    pan_retry_count = models.IntegerField(default=0)
+    pan_last_retry_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
         db_table = 'kyc'
@@ -94,6 +101,16 @@ class KYC(TimestampedModel, SoftDeleteModel):
             self.pan_number,
             self.account_number,
         ])
+    
+    def save(self, *args, **kwargs):
+        """Sync KYC status with User.kyc_status field"""
+        super().save(*args, **kwargs)
+
+          # 👇 Auto-sync the legacy User.kyc_status field
+        if self.user.kyc_status != self.status:
+            from django.db.models import F
+            User.objects.filter(id=self.user.id).update(kyc_status=self.status)
+            logger.info(f"✅ Synced user.kyc_status to '{self.status}'")
 
 
 class Document(TimestampedModel, SoftDeleteModel):

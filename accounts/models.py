@@ -82,7 +82,8 @@ class User(AbstractUser, TimestampedModel):
             ('verified', 'Verified'),
             ('rejected', 'Rejected'),
         ],
-        default='pending'
+        default='pending',
+        help_text="LEGACY FIELD - Synced from compliance.KYC.status" 
     )
     kyc_verified_at = models.DateTimeField(null=True, blank=True)
 
@@ -134,6 +135,15 @@ class User(AbstractUser, TimestampedModel):
             code_name=permission_code
         ).exists()
 
+
+     
+    @property
+    def kyc_verified(self):
+        """Check if KYC is verified (uses compliance.KYC as source of truth)"""
+        try:
+            return self.kyc.status == 'verified'
+        except:
+            return False
 
 # ============================================
 # RBAC - ROLES (Simplified - Global Only)

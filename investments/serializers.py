@@ -94,130 +94,6 @@ class TransactionSerializer(serializers.ModelSerializer):
         ]
 
 
-class InvestmentSerializer(serializers.ModelSerializer):
-    """Serializer for Investment model"""
-    
-    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
-    property_name = serializers.CharField(source='property.name', read_only=True)
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-    cp_name = serializers.CharField(
-        source='referred_by_cp.user.get_full_name',
-        read_only=True,
-        allow_null=True
-    )
-    
-    class Meta:
-        model = Investment
-        fields = [
-            'id',
-            'investment_id',
-            'customer',
-            'customer_name',
-            'property',
-            'property_name',
-            'referred_by_cp',
-            'cp_name',
-            'amount',
-            'units_purchased',
-            'price_per_unit_at_investment',
-            'status',
-            'status_display',
-            'approved_by',
-            'approved_at',
-            'rejection_reason',
-            'payment_completed',
-            'payment_completed_at',
-            'transaction',
-            'expected_return_amount',
-            'actual_return_amount',
-            'investment_date',
-            'maturity_date',
-            'lock_in_end_date',
-            'notes',
-            'is_deleted',
-            'created_at',
-            'updated_at'
-        ]
-        read_only_fields = [
-            'investment_id',
-            'investment_date',
-            'approved_by',
-            'approved_at',
-            'payment_completed_at',
-            'created_at',
-            'updated_at'
-        ]
-
-
-class CreateInvestmentSerializer(serializers.Serializer):
-    """Serializer for creating new investment"""
-    
-    property_id = serializers.IntegerField()
-    units = serializers.IntegerField(min_value=1)
-    referred_by_cp_id = serializers.IntegerField(required=False, allow_null=True)
-    
-    def validate_property_id(self, value):
-        """Validate property exists and is available"""
-        from properties.models import Property
-        
-        try:
-            property_obj = Property.objects.get(id=value)
-            
-            if property_obj.status not in ['live', 'funding']:
-                raise serializers.ValidationError(
-                    "Property is not available for investment"
-                )
-            
-            if property_obj.available_units <= 0:
-                raise serializers.ValidationError(
-                    "No units available in this property"
-                )
-            
-            return value
-            
-        except Property.DoesNotExist:
-            raise serializers.ValidationError("Property not found")
-    
-    def validate_units(self, value):
-        """Validate units"""
-        if value <= 0:
-            raise serializers.ValidationError("Units must be greater than 0")
-        return value
-    
-    def validate(self, data):
-        """Cross-field validation"""
-        from properties.models import Property
-        
-        property_obj = Property.objects.get(id=data['property_id'])
-        units = data['units']
-        
-        # Check if enough units available
-        if units > property_obj.available_units:
-            raise serializers.ValidationError({
-                'units': f'Only {property_obj.available_units} units available'
-            })
-        
-        # Calculate total amount
-        total_amount = property_obj.price_per_unit * units
-        
-        # Check minimum investment
-        if total_amount < property_obj.minimum_investment:
-            raise serializers.ValidationError({
-                'units': f'Minimum investment is ₹{property_obj.minimum_investment}'
-            })
-        
-        # Check maximum investment if set
-        if property_obj.maximum_investment and total_amount > property_obj.maximum_investment:
-            raise serializers.ValidationError({
-                'units': f'Maximum investment is ₹{property_obj.maximum_investment}'
-            })
-        
-        data['total_amount'] = total_amount
-        data['price_per_unit'] = property_obj.price_per_unit
-        
-        return data
-
-
 class TransactionHistorySerializer(serializers.ModelSerializer):
     """Simplified serializer for transaction history"""
     
@@ -251,10 +127,125 @@ class TransactionHistorySerializer(serializers.ModelSerializer):
         return f'{sign}₹{obj.amount:,.2f}'
 
 
+# ============================================
+# INVESTMENT SERIALIZERS
+# ============================================
 
-# investments/serializers.py
+class InvestmentSerializer(serializers.ModelSerializer):
+    """Serializer for Investment model - matches UserPortfolio.jsx expectations"""
+    
+    # User details
+    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
+    
+    # Property details (nested object for PropertyCard component)
+    property = serializers.SerializerMethodField()
+    
+    # Display fields
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    # CP details (optional)
+    cp_name = serializers.CharField(
+        source='referred_by_cp.user.get_full_name',
+        read_only=True,
+        allow_null=True
+    )
+    
+    # ALIASES - These point to real model fields via 'source'
+    units_count = serializers.IntegerField(source='units_purchased', read_only=True)
+    invested_at = serializers.DateField(source='investment_date', read_only=True)
+    expected_return = serializers.DecimalField(
+        source='expected_return_amount', 
+        max_digits=15, 
+        decimal_places=2,
+        read_only=True
+    )
+    actual_return = serializers.DecimalField(
+        source='actual_return_amount',
+        max_digits=15,
+        decimal_places=2,
+        read_only=True
+    )
+    
+    class Meta:
+        model = Investment
+        fields = [
+            'id',
+            'investment_id',
+            'customer',
+            'customer_name',
+            'property',  # SerializerMethodField
+            'referred_by_cp',
+            'cp_name',
+            'amount',
+            'units_purchased',  # Real field
+            'units_count',      # Alias → units_purchased
+            'price_per_unit_at_investment',
+            'status',
+            'status_display',
+            'expected_return_amount',  # Real field
+            'expected_return',         # Alias → expected_return_amount
+            'actual_return_amount',    # Real field
+            'actual_return',           # Alias → actual_return_amount
+            'investment_date',  # Real field
+            'invested_at',      # Alias → investment_date
+            'maturity_date',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = [
+            'investment_id',
+            'investment_date',
+            'created_at',
+            'updated_at'
+        ]
+    
+    def get_property(self, obj):
+        """Return property details matching PropertyCard expectations"""
+        property_obj = obj.property
+        
+        # Get all images, ordered
+        images_list = []
+        primary_image = None
+        
+        try:
+            if hasattr(property_obj, 'images'):
+                images = property_obj.images.order_by('order').all()
+                for img in images:
+                    if img.image and self.context.get('request'):
+                        img_url = self.context['request'].build_absolute_uri(img.image.url)
+                        images_list.append(img_url)
+                        if not primary_image:  # First image is primary
+                            primary_image = img_url
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"⚠️ Failed to get property images: {str(e)}")
+        
+        return {
+            'id': property_obj.id,
+            'name': getattr(property_obj, 'name', ''),
+            'title': getattr(property_obj, 'title', ''),
+            'builder_name': getattr(property_obj, 'builder_name', ''),
+            'city': getattr(property_obj, 'city', ''),
+            'locality': getattr(property_obj, 'locality', ''),
+            'state': getattr(property_obj, 'state', ''),
+            'price_per_unit': str(getattr(property_obj, 'price_per_unit', 0)),
+            'minimum_investment': str(getattr(property_obj, 'minimum_investment', 0)),
+            'expected_return_percentage': str(getattr(property_obj, 'expected_return_percentage', 0)),
+            'gross_yield': str(getattr(property_obj, 'gross_yield', 0)),
+            'potential_gain': str(getattr(property_obj, 'potential_gain', 0)),
+            'status': getattr(property_obj, 'status', ''),
+            'available_units': getattr(property_obj, 'available_units', 0),
+            'total_units': getattr(property_obj, 'total_units', 0),
+            'image': primary_image,  # Single primary image
+            'images': images_list,   # All images array
+            'gallery': images_list   # Alias for PropertyCard compatibility
+        }
+
 
 class CreateInvestmentSerializer(serializers.Serializer):
+    """Serializer for creating new investment"""
+    
     property_id = serializers.IntegerField(required=True)
     amount = serializers.DecimalField(max_digits=15, decimal_places=2, required=True)
     units_count = serializers.IntegerField(required=True, min_value=1)
@@ -265,13 +256,13 @@ class CreateInvestmentSerializer(serializers.Serializer):
         return value
     
     def validate(self, data):
-        from properties.models import Property  # Import here to avoid circular import
+        """Cross-field validation"""
         
         # Check if property exists and is available for investment
         try:
             property_obj = Property.objects.get(
                 id=data['property_id'],
-                status__in=['live', 'funding'],  # ✅ Changed from 'active'
+                status__in=['live', 'funding'],
                 is_published=True
             )
         except Property.DoesNotExist:
@@ -310,25 +301,3 @@ class CreateInvestmentSerializer(serializers.Serializer):
         data['property'] = property_obj
         
         return data
-
-
-class InvestmentSerializer(serializers.ModelSerializer):
-    property_title = serializers.CharField(source='property.title', read_only=True)
-    property_image = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Investment
-        fields = [
-            'id', 'property', 'property_title', 'property_image',
-            'amount', 'units_count', 'status', 'invested_at',
-            'expected_return', 'actual_return'
-        ]
-    
-    def get_property_image(self, obj):
-        image = obj.property.images.filter(is_primary=True).first()
-        if image:
-            return self.context['request'].build_absolute_uri(image.image.url)
-        return None
-    
-
-

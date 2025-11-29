@@ -7,18 +7,20 @@ import logging
 import random
 import base64
 from decimal import Decimal
-from django.conf import settings
+from django.conf import settings  # 👈 THIS LINE MUST BE PRESENT!
 
 logger = logging.getLogger(__name__)
-
 
 class SurepassKYC:
     """Service for KYC verification via Surepass API"""
     
     def __init__(self):
         self.api_token = getattr(settings, 'SUREPASS_API_TOKEN', '')
-        self.base_url = getattr(settings, 'SUREPASS_BASE_URL', 'https://kyc-api.surepass.io')
         self.test_mode = getattr(settings, 'SUREPASS_TEST_MODE', True)
+        
+        # 👇 NEW: Different base URLs for different APIs
+        self.sandbox_url = 'https://sandbox.surepass.io'  # For Aadhaar & PAN
+        self.production_url = 'https://kyc-api.surepass.io'  # For Bank only
         
         if not self.test_mode and not self.api_token:
             logger.warning("⚠️  Surepass API token not configured!")
@@ -52,7 +54,8 @@ class SurepassKYC:
             return self._mock_aadhaar_response()
         
         try:
-            url = f"{self.base_url}/api/v1/aadhaar/upload/eaadhaar"
+            # 👇 Always use sandbox for Aadhaar
+            url = f"{self.sandbox_url}/api/v1/aadhaar/upload/eaadhaar"
             
             # Read file content and encode to base64
             pdf_content = pdf_file.read()
@@ -156,7 +159,8 @@ class SurepassKYC:
             return self._mock_pan_response(pan_number)
         
         try:
-            url = f"{self.base_url}/api/v1/pan/pan"
+            # 👇 Always use sandbox for PAN
+            url = f"{self.sandbox_url}/api/v1/pan/pan"
             
             payload = {
                 'id_number': pan_number.upper()
@@ -236,15 +240,17 @@ class SurepassKYC:
             return self._mock_bank_response(account_number, ifsc_code)
         
         try:
-            # ✅ CORRECT ENDPOINT - with trailing slash
-            url = f"{self.base_url}/api/v1/bank-verification/"
+            # 👇 ALWAYS use production URL for Bank (no sandbox!)
+            url = f"{self.production_url}/api/v1/bank-verification/"
             
-            # ✅ CORRECT PARAMETERS - as per Surepass API
             payload = {
-                'id_number': account_number,  # ← Changed from 'account_number'
+                'id_number': account_number,
                 'ifsc': ifsc_code.upper(),
-                'ifsc_details': True  # ← Added to get bank details
+                'ifsc_details': True
             }
+            
+            logger.info(f"📡 Calling Surepass Bank API: {url}")
+            logger.info(f"📦 Payload: {payload}")
             
             response = requests.post(
                 url,
@@ -253,8 +259,12 @@ class SurepassKYC:
                 timeout=30
             )
             
+            logger.info(f"📡 Response status: {response.status_code}")
+            
             response.raise_for_status()
             result = response.json()
+            
+            logger.info(f"📦 Response data: {result}")
             
             if result.get('success'):
                 data = result.get('data', {})
@@ -315,7 +325,15 @@ class SurepassKYC:
                 'name_at_bank': 'RAJESH KUMAR',
                 'account_number': account_number[-4:].rjust(len(account_number), '*'),
                 'ifsc': ifsc_code.upper(),
-                'bank_name': 'HDFC Bank'
+                'bank_name': 'HDFC Bank',
+                'branch': 'Main Branch',
+                'city': 'Mumbai',
+                'state': 'Maharashtra',
+                'upi_enabled': True,
+                'imps_enabled': True,
+                'neft_enabled': True,
+                'rtgs_enabled': True,
+                'status': 'success'
             },
             'message': 'Bank account verified successfully (TEST MODE)'
         }

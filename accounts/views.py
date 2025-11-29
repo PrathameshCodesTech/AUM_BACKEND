@@ -79,7 +79,11 @@ def complete_registration(request):
 @permission_classes([IsAuthenticated])
 def get_current_user(request):
     """Get current logged-in user details"""
-    serializer = UserSerializer(request.user)
+    # 👇 ADD THIS: Force fresh fetch from database
+    from accounts.models import User
+    user = User.objects.get(id=request.user.id)
+    
+    serializer = UserSerializer(user)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -100,7 +104,6 @@ def logout(request):
         return Response({
             'error': str(e)
         }, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 class CompleteProfileView(APIView):
@@ -124,10 +127,17 @@ class CompleteProfileView(APIView):
         
         user = serializer.update(request.user, serializer.validated_data)
         
+        # 👇 ADD THIS: Refresh from database
+        user.refresh_from_db()
+        
+        # 👇 ADD THIS: Use UserSerializer to return complete user data
+        user_serializer = UserSerializer(user)
+        
         return Response({
             'success': True,
             'message': 'Profile completed successfully',
-            'data': {
+            'user': user_serializer.data,  # 👈 Changed from manual dict to full serializer
+            'data': {  # Keep this for backward compatibility
                 'username': user.username,
                 'email': user.email,
                 'date_of_birth': user.date_of_birth,
@@ -135,6 +145,7 @@ class CompleteProfileView(APIView):
                 'profile_completed': user.profile_completed
             }
         }, status=status.HTTP_200_OK)
+    
         
 
 from .services.dashboard_service import DashboardService

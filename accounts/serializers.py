@@ -16,16 +16,39 @@ class SendOTPSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False, allow_blank=True)
 
     def validate_phone(self, value):
-        # Remove any spaces or special characters
-        phone = value.strip().replace(' ', '').replace('-', '')
-
-        # Add +91 prefix if not present
-        if not phone.startswith('+91'):
-            phone = '+91' + phone.lstrip('0')
-
-        if len(phone) < 13:  # +91 (3) + 10 digits
-            raise serializers.ValidationError("Invalid phone number")
-
+        """Validate and normalize phone number"""
+        import re
+        
+        # Remove any spaces, dashes, or other non-digit characters except +
+        phone = re.sub(r'[^\d+]', '', value.strip())
+        
+        # Remove + temporarily for digit counting
+        digits_only = phone.replace('+', '')
+        
+        # Handle different formats
+        if len(digits_only) == 10:
+            # 10 digits = Indian mobile (7726255555)
+            phone = f'+91{digits_only}'
+        elif len(digits_only) == 12 and digits_only.startswith('91'):
+            # 12 digits starting with 91 (917726255555)
+            phone = f'+{digits_only}'
+        elif len(digits_only) == 11 and digits_only.startswith('0'):
+            # 11 digits starting with 0 (07726255555)
+            phone = f'+91{digits_only[1:]}'
+        elif phone.startswith('+91') and len(digits_only) == 12:
+            # Already formatted correctly (+917726255555)
+            pass
+        else:
+            raise serializers.ValidationError(
+                f"Invalid phone number format. Expected 10-digit Indian mobile number. Got: {value}"
+            )
+        
+        # Final validation: Must be +91 followed by exactly 10 digits
+        if not re.match(r'^\+91\d{10}$', phone):
+            raise serializers.ValidationError(
+                f"Phone must be in format +91XXXXXXXXXX (10 digits). Got: {phone}"
+            )
+        
         return phone
 
     def validate(self, data):
@@ -215,6 +238,7 @@ class UserRegistrationSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
 
+
     def validate_username(self, value):
         # Check if username already exists (excluding current user)
         user = self.context.get('user')
@@ -255,9 +279,11 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'phone', 'phone_verified',
             'first_name', 'last_name', 'date_of_birth', 'avatar',
-            'kyc_status', 'role', 'permissions'
+            'kyc_status', 'role', 'permissions',
+            'is_indian',  # 👈 ADD THIS
+            'profile_completed',  # 👈 ADD THIS
         ]
-        read_only_fields = ['phone', 'phone_verified', 'kyc_status']
+        read_only_fields = ['phone', 'phone_verified', 'kyc_status', 'profile_completed']
 
     def get_permissions(self, obj):
         """Get user's permissions via their role"""
@@ -287,6 +313,7 @@ class CompleteProfileSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
     is_indian = serializers.BooleanField(required=True)
+    
     
     def validate_username(self, value):
         # Check if username already exists

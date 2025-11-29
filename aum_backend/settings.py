@@ -184,22 +184,23 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ========================================
 
 # Route Mobile Credentials (From working config)
-ROUTE_MOBILE_USERNAME = 'VCSMST'
-ROUTE_MOBILE_PASSWORD = '[PdjH9-6'
-ROUTE_MOBILE_SERVER = 'https://sms6.rmlconnect.net:8443'
+# ========================================
+# ROUTE MOBILE SMS GATEWAY CONFIGURATION
+# ========================================
 
-# DLT Configuration
-ROUTE_MOBILE_ENTITY_ID = '1201173433382664591'
+ROUTE_MOBILE_SMS_CONFIG = {
+    "USERNAME": "VCSMST",
+    "PASSWORD": "[PdjH9-6",
+    "TYPE": 5,  # ISO-8859-1 encoding
+    "DLR": 1,   # Enable delivery report
+    "SOURCE": "VBCONN",
+    "ENTITY_ID": "1201173433382664591",
+    "TEMPLATE_ID": "1207175862143571237",
+    "BASE_URL": "https://sms6.rmlconnect.net:8443/bulksms/bulksms",
+}
 
-# Template IDs
-ROUTE_MOBILE_TEMPLATE_ID = '1207175862143571237'  # For OTP
-ROUTE_MOBILE_TEMPLATE_ID_FORGOT = '1207173989148090531'  # For forgot password
-
-# Sender ID
-ROUTE_MOBILE_SENDER_ID = 'VBCONN'
-
-# Test Mode (Set to False for production)
-ROUTE_MOBILE_TEST_MODE = True  # Set to True for testing without sending real SMS
+# Test Mode (Set to False for real SMS)
+ROUTE_MOBILE_TEST_MODE = False
 
 # ========================================
 # LOGGING CONFIGURATION
