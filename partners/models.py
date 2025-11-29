@@ -2,7 +2,7 @@
 from django.db import models
 from decimal import Decimal
 from django.core.validators import MinValueValidator, MaxValueValidator
-from accounts.models import User, Organization, TimestampedModel, SoftDeleteModel
+from accounts.models import User, TimestampedModel, SoftDeleteModel
 
 # ============================================
 # CHANNEL PARTNER HIERARCHY
@@ -14,8 +14,6 @@ class ChannelPartner(TimestampedModel, SoftDeleteModel):
 
     user = models.OneToOneField(
         User, on_delete=models.CASCADE, related_name='cp_profile')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='channel_partners')
 
     # Hierarchy - for sub-CP structure
     parent_cp = models.ForeignKey(
@@ -62,7 +60,7 @@ class ChannelPartner(TimestampedModel, SoftDeleteModel):
     class Meta:
         db_table = 'channel_partners'
         indexes = [
-            models.Index(fields=['organization', 'is_active']),
+            models.Index(fields=['is_active']),
             models.Index(fields=['parent_cp']),
             models.Index(fields=['cp_code']),
         ]
@@ -94,8 +92,6 @@ class CPCustomerRelation(TimestampedModel):
         ChannelPartner, on_delete=models.CASCADE, related_name='customers')
     customer = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name='referred_by_cp')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='cp_customer_relations')
 
     # Referral tracking
     referral_code = models.CharField(max_length=50, blank=True)
@@ -106,7 +102,7 @@ class CPCustomerRelation(TimestampedModel):
 
     class Meta:
         db_table = 'cp_customer_relations'
-        unique_together = ('cp', 'customer', 'organization')
+        unique_together = ('cp', 'customer')
         indexes = [
             models.Index(fields=['cp', 'is_active']),
             models.Index(fields=['customer']),
@@ -128,9 +124,6 @@ class CommissionRule(TimestampedModel):
         ('one_time', 'One-time'),
         ('recurring', 'Recurring'),
     ]
-
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='commission_rules')
 
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -171,11 +164,11 @@ class CommissionRule(TimestampedModel):
     class Meta:
         db_table = 'commission_rules'
         indexes = [
-            models.Index(fields=['organization', 'is_active']),
+            models.Index(fields=['is_active']),
         ]
 
     def __str__(self):
-        return f"{self.organization.name} - {self.name}"
+        return self.name
 
 
 class CPCommissionRule(models.Model):

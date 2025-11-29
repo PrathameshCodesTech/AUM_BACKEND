@@ -1,7 +1,7 @@
 # commissions/models.py
 from django.db import models
 from decimal import Decimal
-from accounts.models import User, Organization, TimestampedModel
+from accounts.models import User, TimestampedModel
 
 # ============================================
 # COMMISSION
@@ -30,10 +30,9 @@ class Commission(TimestampedModel):
     commission_id = models.CharField(max_length=100, unique=True)
 
     # Parties
+    # Parties
     cp = models.ForeignKey('partners.ChannelPartner',
                            on_delete=models.CASCADE, related_name='commissions')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='commissions')
 
     # Source
     investment = models.ForeignKey(
@@ -108,13 +107,8 @@ class CommissionPayout(TimestampedModel):
     # Payout ID
     payout_id = models.CharField(max_length=100, unique=True)
 
-    # Parties
     cp = models.ForeignKey('partners.ChannelPartner',
                            on_delete=models.CASCADE, related_name='commission_payouts')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='commission_payouts')
-
-    # Amount
     total_amount = models.DecimalField(max_digits=15, decimal_places=2)
     tds_amount = models.DecimalField(
         max_digits=15, decimal_places=2, default=Decimal('0.00'))

@@ -1,311 +1,119 @@
 # accounts/management/commands/seed_permissions.py
 from django.core.management.base import BaseCommand
-from django.db import transaction
-from accounts.models import Permission, Role, RolePermission, Organization
+from accounts.models import Permission
 
 
 class Command(BaseCommand):
-    help = 'Seed all permissions and assign to default roles'
+    help = 'Seed permissions for AssetKart'
 
-    # Define all permissions organized by module
-    PERMISSIONS = {
-        'organizations': [
-            ('create', 'Create Organization', 'Organization Management'),
-            ('read', 'View Organization', 'Organization Management'),
-            ('update', 'Update Organization', 'Organization Management'),
-            ('delete', 'Delete Organization', 'Organization Management'),
-            ('manage', 'Manage Organization Settings', 'Organization Management'),
-            ('manage_subscription', 'Manage Subscription', 'Organization Management'),
-        ],
-        'users': [
-            ('create', 'Create User', 'User Management'),
-            ('read', 'View User', 'User Management'),
-            ('update', 'Update User', 'User Management'),
-            ('delete', 'Delete User', 'User Management'),
-            ('manage_roles', 'Manage User Roles', 'User Management'),
-            ('block', 'Block/Unblock User', 'User Management'),
-            ('view_all', 'View All Users', 'User Management'),
-        ],
-        'roles': [
-            ('create', 'Create Role', 'Role Management'),
-            ('read', 'View Role', 'Role Management'),
-            ('update', 'Update Role', 'Role Management'),
-            ('delete', 'Delete Role', 'Role Management'),
-            ('assign_permissions', 'Assign Permissions to Role', 'Role Management'),
-        ],
-        'properties': [
-            ('create', 'Create Property', 'Property Management'),
-            ('read', 'View Property', 'Property Management'),
-            ('update', 'Update Property', 'Property Management'),
-            ('delete', 'Delete Property', 'Property Management'),
-            ('approve', 'Approve Property', 'Property Management'),
-            ('reject', 'Reject Property', 'Property Management'),
-            ('publish', 'Publish Property', 'Property Management'),
-            ('view_all', 'View All Properties', 'Property Management'),
-            ('manage_units', 'Manage Property Units', 'Property Management'),
-            ('upload_documents', 'Upload Property Documents', 'Property Management'),
-        ],
-        'investments': [
-            ('create', 'Make Investment', 'Investment Operations'),
-            ('read', 'View Investment', 'Investment Operations'),
-            ('update', 'Update Investment', 'Investment Operations'),
-            ('delete', 'Cancel Investment', 'Investment Operations'),
-            ('approve', 'Approve Investment', 'Investment Operations'),
-            ('reject', 'Reject Investment', 'Investment Operations'),
-            ('view_all', 'View All Investments', 'Investment Operations'),
-            ('view_own', 'View Own Investments', 'Investment Operations'),
-        ],
-        'wallet': [
-            ('view', 'View Wallet Balance', 'Wallet Management'),
-            ('deposit', 'Deposit to Wallet', 'Wallet Management'),
-            ('withdraw', 'Withdraw from Wallet', 'Wallet Management'),
-            ('view_transactions', 'View Transactions', 'Wallet Management'),
-        ],
-        'commissions': [
-            ('view_own', 'View Own Commissions', 'Commission Management'),
-            ('view_all', 'View All Commissions', 'Commission Management'),
-            ('approve', 'Approve Commission', 'Commission Management'),
-            ('process_payout', 'Process Commission Payout', 'Commission Management'),
-            ('configure_rules', 'Configure Commission Rules', 'Commission Management'),
-        ],
-        'channel_partners': [
-            ('create', 'Create Channel Partner', 'CP Management'),
-            ('read', 'View Channel Partner', 'CP Management'),
-            ('update', 'Update Channel Partner', 'CP Management'),
-            ('delete', 'Delete Channel Partner', 'CP Management'),
-            ('verify', 'Verify Channel Partner', 'CP Management'),
-            ('view_customers', 'View CP Customers', 'CP Management'),
-            ('view_hierarchy', 'View CP Hierarchy', 'CP Management'),
-        ],
-        'payouts': [
-            ('create', 'Create Payout', 'Payout Management'),
-            ('read', 'View Payout', 'Payout Management'),
-            ('approve', 'Approve Payout', 'Payout Management'),
-            ('process', 'Process Payout', 'Payout Management'),
-            ('view_all', 'View All Payouts', 'Payout Management'),
-        ],
-        'redemptions': [
-            ('create', 'Request Redemption', 'Redemption Management'),
-            ('read', 'View Redemption Request', 'Redemption Management'),
-            ('approve', 'Approve Redemption', 'Redemption Management'),
-            ('reject', 'Reject Redemption', 'Redemption Management'),
-            ('process', 'Process Redemption', 'Redemption Management'),
-        ],
-        'kyc': [
-            ('submit', 'Submit KYC', 'KYC Management'),
-            ('view_own', 'View Own KYC', 'KYC Management'),
-            ('view_all', 'View All KYC', 'KYC Management'),
-            ('verify', 'Verify KYC', 'KYC Management'),
-            ('reject', 'Reject KYC', 'KYC Management'),
-        ],
-        'reports': [
-            ('view_dashboard', 'View Dashboard', 'Reporting'),
-            ('view_financial', 'View Financial Reports', 'Reporting'),
-            ('view_analytics', 'View Analytics', 'Reporting'),
-            ('export', 'Export Reports', 'Reporting'),
-        ],
-        'teams': [
-            ('create', 'Create Team', 'Team Management'),
-            ('read', 'View Team', 'Team Management'),
-            ('update', 'Update Team', 'Team Management'),
-            ('delete', 'Delete Team', 'Team Management'),
-            ('manage_members', 'Manage Team Members', 'Team Management'),
-        ],
-    }
+    def handle(self, *args, **kwargs):
+        self.stdout.write("🌱 Seeding Permissions...")
 
-    # Define which permissions each role should have
-    ROLE_PERMISSIONS = {
-        'superadmin': 'ALL',  # Gets all permissions
-        'tenant_admin': [
-            # Organization
-            'organizations.read', 'organizations.update', 'organizations.manage',
-            'organizations.manage_subscription',
-            # Users
-            'users.create', 'users.read', 'users.update', 'users.delete',
-            'users.manage_roles', 'users.block', 'users.view_all',
-            # Roles
-            'roles.create', 'roles.read', 'roles.update', 'roles.delete',
-            'roles.assign_permissions',
-            # Properties
-            'properties.create', 'properties.read', 'properties.update',
-            'properties.delete', 'properties.approve', 'properties.reject',
-            'properties.publish', 'properties.view_all', 'properties.manage_units',
-            'properties.upload_documents',
-            # Investments
-            'investments.read', 'investments.update', 'investments.approve',
-            'investments.reject', 'investments.view_all',
-            # Wallet
-            'wallet.view', 'wallet.view_transactions',
-            # Commissions
-            'commissions.view_all', 'commissions.approve', 'commissions.process_payout',
-            'commissions.configure_rules',
-            # Channel Partners
-            'channel_partners.create', 'channel_partners.read', 'channel_partners.update',
-            'channel_partners.delete', 'channel_partners.verify', 'channel_partners.view_customers',
-            'channel_partners.view_hierarchy',
-            # Payouts
-            'payouts.create', 'payouts.read', 'payouts.approve', 'payouts.process',
-            'payouts.view_all',
-            # Redemptions
-            'redemptions.read', 'redemptions.approve', 'redemptions.reject', 'redemptions.process',
-            # KYC
-            'kyc.view_all', 'kyc.verify', 'kyc.reject',
-            # Reports
-            'reports.view_dashboard', 'reports.view_financial', 'reports.view_analytics',
-            'reports.export',
-            # Teams
-            'teams.create', 'teams.read', 'teams.update', 'teams.delete', 'teams.manage_members',
-        ],
-        'channel_partner': [
-            # Users (limited)
-            'users.read',
-            # Properties
-            'properties.read',
-            # Investments (own customers)
-            'investments.read',
-            # Wallet
-            'wallet.view', 'wallet.view_transactions',
-            # Commissions
-            'commissions.view_own',
-            # Channel Partners
-            'channel_partners.read', 'channel_partners.view_customers',
-            # KYC
-            'kyc.view_own',
-        ],
-        'developer': [
-            # Properties
-            'properties.create', 'properties.read', 'properties.update',
-            'properties.manage_units', 'properties.upload_documents',
-            # Investments (for their properties)
-            'investments.read',
-            # Payouts
-            'payouts.read',
-            # KYC
-            'kyc.view_own',
-        ],
-        'customer': [
-            # Properties (view only)
-            'properties.read',
-            # Investments (own)
-            'investments.create', 'investments.read', 'investments.view_own',
-            # Wallet
-            'wallet.view', 'wallet.deposit', 'wallet.view_transactions',
-            # Redemptions
-            'redemptions.create', 'redemptions.read',
-            # KYC
-            'kyc.submit', 'kyc.view_own',
-        ],
-    }
+        permissions_data = [
+            # User Management
+            {'code_name': 'users.view', 'name': 'View Users', 'module': 'users', 'action': 'view', 'category': 'User Management'},
+            {'code_name': 'users.create', 'name': 'Create Users', 'module': 'users', 'action': 'create', 'category': 'User Management'},
+            {'code_name': 'users.update', 'name': 'Update Users', 'module': 'users', 'action': 'update', 'category': 'User Management'},
+            {'code_name': 'users.delete', 'name': 'Delete Users', 'module': 'users', 'action': 'delete', 'category': 'User Management'},
+            {'code_name': 'users.manage_roles', 'name': 'Manage User Roles', 'module': 'users', 'action': 'manage_roles', 'category': 'User Management'},
+            {'code_name': 'users.approve_kyc', 'name': 'Approve KYC', 'module': 'users', 'action': 'approve_kyc', 'category': 'User Management'},
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            '--assign',
-            action='store_true',
-            help='Assign permissions to roles after seeding',
-        )
-        parser.add_argument(
-            '--org-id',
-            type=int,
-            help='Assign permissions for specific organization roles',
-        )
+            # Role & Permission Management
+            {'code_name': 'roles.view', 'name': 'View Roles', 'module': 'roles', 'action': 'view', 'category': 'Access Control'},
+            {'code_name': 'roles.create', 'name': 'Create Roles', 'module': 'roles', 'action': 'create', 'category': 'Access Control'},
+            {'code_name': 'roles.update', 'name': 'Update Roles', 'module': 'roles', 'action': 'update', 'category': 'Access Control'},
+            {'code_name': 'roles.delete', 'name': 'Delete Roles', 'module': 'roles', 'action': 'delete', 'category': 'Access Control'},
+            {'code_name': 'permissions.manage', 'name': 'Manage Permissions', 'module': 'permissions', 'action': 'manage', 'category': 'Access Control'},
 
-    @transaction.atomic
-    def handle(self, *args, **options):
-        assign = options.get('assign')
-        org_id = options.get('org_id')
+            # Property Management
+            {'code_name': 'properties.view', 'name': 'View Properties', 'module': 'properties', 'action': 'view', 'category': 'Property Management'},
+            {'code_name': 'properties.create', 'name': 'Create Properties', 'module': 'properties', 'action': 'create', 'category': 'Property Management'},
+            {'code_name': 'properties.update', 'name': 'Update Properties', 'module': 'properties', 'action': 'update', 'category': 'Property Management'},
+            {'code_name': 'properties.delete', 'name': 'Delete Properties', 'module': 'properties', 'action': 'delete', 'category': 'Property Management'},
+            {'code_name': 'properties.approve', 'name': 'Approve Properties', 'module': 'properties', 'action': 'approve', 'category': 'Property Management'},
+            {'code_name': 'properties.publish', 'name': 'Publish Properties', 'module': 'properties', 'action': 'publish', 'category': 'Property Management'},
+            {'code_name': 'properties.manage_documents', 'name': 'Manage Property Documents', 'module': 'properties', 'action': 'manage_documents', 'category': 'Property Management'},
 
-        # Seed all permissions
-        self.stdout.write('🌱 Seeding permissions...')
-        self.seed_permissions()
+            # Investment Management
+            {'code_name': 'investments.view', 'name': 'View Investments', 'module': 'investments', 'action': 'view', 'category': 'Investment Management'},
+            {'code_name': 'investments.create', 'name': 'Create Investments', 'module': 'investments', 'action': 'create', 'category': 'Investment Management'},
+            {'code_name': 'investments.approve', 'name': 'Approve Investments', 'module': 'investments', 'action': 'approve', 'category': 'Investment Management'},
+            {'code_name': 'investments.cancel', 'name': 'Cancel Investments', 'module': 'investments', 'action': 'cancel', 'category': 'Investment Management'},
+            {'code_name': 'investments.view_all', 'name': 'View All Investments', 'module': 'investments', 'action': 'view_all', 'category': 'Investment Management'},
 
-        if assign:
-            if org_id:
-                try:
-                    org = Organization.objects.get(id=org_id)
-                    self.assign_permissions_to_roles(org)
-                    self.stdout.write(
-                        self.style.SUCCESS(
-                            f'✅ Assigned permissions for {org.name}')
-                    )
-                except Organization.DoesNotExist:
-                    self.stdout.write(
-                        self.style.ERROR(
-                            f'❌ Organization with ID {org_id} does not exist')
-                    )
-            else:
-                # Assign to all organization roles
-                orgs = Organization.objects.filter(is_active=True)
-                for org in orgs:
-                    self.assign_permissions_to_roles(org)
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f'✅ Assigned permissions for {orgs.count()} organizations')
-                )
-        else:
-            self.stdout.write(
-                self.style.WARNING(
-                    'ℹ️  Use --assign to assign permissions to roles')
+            # Wallet & Transactions
+            {'code_name': 'wallet.view', 'name': 'View Wallet', 'module': 'wallet', 'action': 'view', 'category': 'Financial'},
+            {'code_name': 'wallet.add_funds', 'name': 'Add Funds to Wallet', 'module': 'wallet', 'action': 'add_funds', 'category': 'Financial'},
+            {'code_name': 'wallet.withdraw', 'name': 'Withdraw from Wallet', 'module': 'wallet', 'action': 'withdraw', 'category': 'Financial'},
+            {'code_name': 'wallet.view_all', 'name': 'View All Wallets', 'module': 'wallet', 'action': 'view_all', 'category': 'Financial'},
+            {'code_name': 'transactions.view', 'name': 'View Transactions', 'module': 'transactions', 'action': 'view', 'category': 'Financial'},
+            {'code_name': 'transactions.view_all', 'name': 'View All Transactions', 'module': 'transactions', 'action': 'view_all', 'category': 'Financial'},
+
+            # Commission Management
+            {'code_name': 'commissions.view', 'name': 'View Commissions', 'module': 'commissions', 'action': 'view', 'category': 'Commission Management'},
+            {'code_name': 'commissions.calculate', 'name': 'Calculate Commissions', 'module': 'commissions', 'action': 'calculate', 'category': 'Commission Management'},
+            {'code_name': 'commissions.approve', 'name': 'Approve Commissions', 'module': 'commissions', 'action': 'approve', 'category': 'Commission Management'},
+            {'code_name': 'commissions.payout', 'name': 'Process Commission Payouts', 'module': 'commissions', 'action': 'payout', 'category': 'Commission Management'},
+            {'code_name': 'commissions.view_all', 'name': 'View All Commissions', 'module': 'commissions', 'action': 'view_all', 'category': 'Commission Management'},
+
+            # Channel Partner Management
+            {'code_name': 'channel_partners.view', 'name': 'View Channel Partners', 'module': 'channel_partners', 'action': 'view', 'category': 'Partner Management'},
+            {'code_name': 'channel_partners.create', 'name': 'Create Channel Partners', 'module': 'channel_partners', 'action': 'create', 'category': 'Partner Management'},
+            {'code_name': 'channel_partners.update', 'name': 'Update Channel Partners', 'module': 'channel_partners', 'action': 'update', 'category': 'Partner Management'},
+            {'code_name': 'channel_partners.approve', 'name': 'Approve Channel Partners', 'module': 'channel_partners', 'action': 'approve', 'category': 'Partner Management'},
+            {'code_name': 'channel_partners.set_hierarchy', 'name': 'Set CP Hierarchy', 'module': 'channel_partners', 'action': 'set_hierarchy', 'category': 'Partner Management'},
+
+            # Reports & Analytics
+            {'code_name': 'reports.view', 'name': 'View Reports', 'module': 'reports', 'action': 'view', 'category': 'Reports & Analytics'},
+            {'code_name': 'reports.export', 'name': 'Export Reports', 'module': 'reports', 'action': 'export', 'category': 'Reports & Analytics'},
+            {'code_name': 'analytics.view', 'name': 'View Analytics', 'module': 'analytics', 'action': 'view', 'category': 'Reports & Analytics'},
+            {'code_name': 'analytics.dashboard', 'name': 'View Analytics Dashboard', 'module': 'analytics', 'action': 'dashboard', 'category': 'Reports & Analytics'},
+
+            # Compliance & KYC (UPDATED - No duplicates)
+            {'code_name': 'compliance.view', 'name': 'View Compliance', 'module': 'compliance', 'action': 'view', 'category': 'Compliance'},
+            {'code_name': 'compliance.manage', 'name': 'Manage Compliance', 'module': 'compliance', 'action': 'manage', 'category': 'Compliance'},
+            {'code_name': 'compliance.view_kyc', 'name': 'View KYC Documents', 'module': 'compliance', 'action': 'view_kyc', 'category': 'Compliance'},
+            {'code_name': 'compliance.approve_kyc', 'name': 'Approve/Reject KYC', 'module': 'compliance', 'action': 'approve_kyc', 'category': 'Compliance'},
+
+            # Redemption Management
+            {'code_name': 'redemptions.view', 'name': 'View Redemptions', 'module': 'redemptions', 'action': 'view', 'category': 'Redemption Management'},
+            {'code_name': 'redemptions.create', 'name': 'Create Redemption Requests', 'module': 'redemptions', 'action': 'create', 'category': 'Redemption Management'},
+            {'code_name': 'redemptions.approve', 'name': 'Approve Redemptions', 'module': 'redemptions', 'action': 'approve', 'category': 'Redemption Management'},
+            {'code_name': 'redemptions.process', 'name': 'Process Redemptions', 'module': 'redemptions', 'action': 'process', 'category': 'Redemption Management'},
+            {'code_name': 'redemptions.view_all', 'name': 'View All Redemptions', 'module': 'redemptions', 'action': 'view_all', 'category': 'Redemption Management'},
+
+            # System Settings
+            {'code_name': 'settings.view', 'name': 'View Settings', 'module': 'settings', 'action': 'view', 'category': 'System'},
+            {'code_name': 'settings.update', 'name': 'Update Settings', 'module': 'settings', 'action': 'update', 'category': 'System'},
+            {'code_name': 'system.manage', 'name': 'Manage System', 'module': 'system', 'action': 'manage', 'category': 'System'},
+        ]
+
+        created_count = 0
+        updated_count = 0
+
+        for perm_data in permissions_data:
+            perm, created = Permission.objects.update_or_create(
+                code_name=perm_data['code_name'],
+                defaults=perm_data
             )
 
-    def seed_permissions(self):
-        """Create all permissions"""
-        created_count = 0
-        existing_count = 0
+            if created:
+                created_count += 1
+            else:
+                updated_count += 1
 
-        for module, actions in self.PERMISSIONS.items():
-            for action, name, category in actions:
-                code_name = f"{module}.{action}"
-
-                permission, created = Permission.objects.get_or_create(
-                    code_name=code_name,
-                    defaults={
-                        'name': name,
-                        'module': module,
-                        'action': action,
-                        'category': category,
-                    }
-                )
-
-                if created:
-                    created_count += 1
-                    self.stdout.write(f"  ✓ Created: {code_name}")
-                else:
-                    existing_count += 1
-
+        self.stdout.write("\n" + "="*50)
         self.stdout.write(
             self.style.SUCCESS(
-                f'\n✅ Permissions seeded: {created_count} created, {existing_count} existing'
+                f"✅ Seeding complete! Created: {created_count}, Updated: {updated_count}"
             )
         )
+        self.stdout.write(f"📊 Total permissions: {Permission.objects.count()}")
+        self.stdout.write("="*50 + "\n")
 
-    def assign_permissions_to_roles(self, organization=None):
-        """Assign permissions to roles"""
-        for role_name, permissions in self.ROLE_PERMISSIONS.items():
-            # Get roles
-            if role_name == 'superadmin':
-                roles = Role.objects.filter(
-                    name=role_name, organization__isnull=True)
-            else:
-                if organization:
-                    roles = Role.objects.filter(
-                        name=role_name, organization=organization)
-                else:
-                    roles = Role.objects.filter(name=role_name)
-
-            for role in roles:
-                # Get permissions to assign
-                if permissions == 'ALL':
-                    perms = Permission.objects.all()
-                else:
-                    perms = Permission.objects.filter(
-                        code_name__in=permissions)
-
-                # Assign permissions
-                for perm in perms:
-                    RolePermission.objects.get_or_create(
-                        role=role,
-                        permission=perm
-                    )
-
-                self.stdout.write(
-                    f"  ✓ Assigned {perms.count()} permissions to {role.display_name}")
+        # Display permissions by category
+        self.stdout.write("\n📋 Permissions by Category:")
+        categories = Permission.objects.values_list('category', flat=True).distinct()
+        for category in sorted(categories):
+            count = Permission.objects.filter(category=category).count()
+            self.stdout.write(f"  {category}: {count} permissions")

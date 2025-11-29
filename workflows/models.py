@@ -2,7 +2,7 @@
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
-from accounts.models import User, Organization, TimestampedModel
+from accounts.models import User, TimestampedModel
 
 # ============================================
 # APPROVAL WORKFLOW
@@ -25,7 +25,7 @@ class ApprovalWorkflow(TimestampedModel):
         ('cancelled', 'Cancelled'),
     ]
     
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='workflows')
+
     
     workflow_type = models.CharField(max_length=20, choices=WORKFLOW_TYPE_CHOICES)
     
@@ -52,7 +52,7 @@ class ApprovalWorkflow(TimestampedModel):
     class Meta:
         db_table = 'approval_workflows'
         indexes = [
-            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['status']),
             models.Index(fields=['assigned_to', 'status']),
             models.Index(fields=['content_type', 'object_id']),
         ]

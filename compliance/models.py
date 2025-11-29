@@ -1,208 +1,161 @@
-# compliance/models.py
-from django.db import models
-from accounts.models import User, Organization, TimestampedModel
+"""
+Compliance Models
+KYC, Documents, and Audit Log models
+"""
+from django.db import models  # ← THIS LINE IS CRITICAL!
+from accounts.models import User, TimestampedModel, SoftDeleteModel
 
-# ============================================
-# KYC (Know Your Customer)
-# ============================================
 
-
-class KYC(TimestampedModel):
-    """KYC verification for users"""
-
-    DOCUMENT_TYPE_CHOICES = [
-        ('aadhaar', 'Aadhaar Card'),
-        ('pan', 'PAN Card'),
-        ('passport', 'Passport'),
-        ('driving_license', 'Driving License'),
-        ('voter_id', 'Voter ID'),
-    ]
-
+class KYC(TimestampedModel, SoftDeleteModel):
+    """Know Your Customer (KYC) details for users"""
+    
     STATUS_CHOICES = [
         ('pending', 'Pending'),
-        ('submitted', 'Submitted'),
         ('under_review', 'Under Review'),
         ('verified', 'Verified'),
         ('rejected', 'Rejected'),
-        ('expired', 'Expired'),
     ]
-
+    
     user = models.OneToOneField(
-        User, on_delete=models.CASCADE, related_name='kyc')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='kyc_records')
-
-    # Personal details
-    full_name = models.CharField(max_length=255)
-    father_name = models.CharField(max_length=255, blank=True)
-    date_of_birth = models.DateField()
-    gender = models.CharField(max_length=10, choices=[(
-        'male', 'Male'), ('female', 'Female'), ('other', 'Other')])
-
-    # Address
-    address = models.TextField()
-    city = models.CharField(max_length=100)
-    state = models.CharField(max_length=100)
-    country = models.CharField(max_length=100, default='India')
-    pincode = models.CharField(max_length=10)
-
-    # Identity documents
-    pan_number = models.CharField(max_length=10, blank=True)
-    pan_document = models.FileField(
-        upload_to='kyc/pan/', null=True, blank=True)
-
-    aadhaar_number = models.CharField(max_length=12, blank=True)
-    aadhaar_front = models.FileField(
-        upload_to='kyc/aadhaar/', null=True, blank=True)
-    aadhaar_back = models.FileField(
-        upload_to='kyc/aadhaar/', null=True, blank=True)
-
-    # Additional documents
-    additional_document_type = models.CharField(
-        max_length=20, choices=DOCUMENT_TYPE_CHOICES, blank=True)
-    additional_document = models.FileField(
-        upload_to='kyc/additional/', null=True, blank=True)
-
-    # Photo
-    photo = models.ImageField(upload_to='kyc/photos/', null=True, blank=True)
-
-    # Bank details for payouts
-    bank_name = models.CharField(max_length=100, blank=True)
-    account_number = models.CharField(max_length=50, blank=True)
-    ifsc_code = models.CharField(max_length=11, blank=True)
-    account_holder_name = models.CharField(max_length=255, blank=True)
-    cancelled_cheque = models.FileField(
-        upload_to='kyc/bank/', null=True, blank=True)
-
+        User,
+        on_delete=models.CASCADE,
+        related_name='kyc'
+    )
+    
+    # Aadhaar Details
+    aadhaar_number = models.CharField(max_length=12, blank=True, null=True)
+    aadhaar_name = models.CharField(max_length=200, blank=True, null=True)
+    aadhaar_dob = models.DateField(blank=True, null=True)
+    aadhaar_gender = models.CharField(max_length=10, blank=True, null=True)
+    aadhaar_address = models.TextField(blank=True, null=True)
+    aadhaar_verified = models.BooleanField(default=False)
+    aadhaar_verified_at = models.DateTimeField(blank=True, null=True)
+    aadhaar_front = models.FileField(upload_to='kyc/aadhaar/', blank=True, null=True)
+    aadhaar_back = models.FileField(upload_to='kyc/aadhaar/', blank=True, null=True)
+    
+    # PAN Details
+    pan_number = models.CharField(max_length=10, blank=True, null=True)
+    pan_name = models.CharField(max_length=200, blank=True, null=True)
+    pan_father_name = models.CharField(max_length=200, blank=True, null=True)
+    pan_dob = models.DateField(blank=True, null=True)
+    pan_verified = models.BooleanField(default=False)
+    pan_verified_at = models.DateTimeField(blank=True, null=True)
+    pan_aadhaar_linked = models.BooleanField(default=False)
+    pan_document = models.FileField(upload_to='kyc/pan/', blank=True, null=True)
+    
+    # Bank Details
+    bank_name = models.CharField(max_length=200, blank=True, null=True)
+    account_number = models.CharField(max_length=20, blank=True, null=True)
+    ifsc_code = models.CharField(max_length=11, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=200, blank=True, null=True)
+    account_type = models.CharField(max_length=20, blank=True, null=True)
+    bank_verified = models.BooleanField(default=False)
+    bank_verified_at = models.DateTimeField(blank=True, null=True)
+    bank_proof = models.FileField(upload_to='kyc/bank/', blank=True, null=True)
+    
+    # Address Details
+    address_line1 = models.CharField(max_length=255, blank=True, null=True)
+    address_line2 = models.CharField(max_length=255, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    state = models.CharField(max_length=100, blank=True, null=True)
+    pincode = models.CharField(max_length=6, blank=True, null=True)
+    address_proof = models.FileField(upload_to='kyc/address/', blank=True, null=True)
+    
+    # API Response Data
+    aadhaar_api_response = models.JSONField(blank=True, null=True)
+    pan_api_response = models.JSONField(blank=True, null=True)
+    bank_api_response = models.JSONField(blank=True, null=True)
+    
     # Status
-    status = models.CharField(
-        max_length=20, choices=STATUS_CHOICES, default='pending')
-
-    # Review
-    reviewed_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_kyc')
-    reviewed_at = models.DateTimeField(null=True, blank=True)
-    rejection_reason = models.TextField(blank=True)
-
-    # Expiry
-    expires_at = models.DateField(null=True, blank=True)
-
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    verified_at = models.DateTimeField(blank=True, null=True)
+    verified_by = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='verified_kycs')
+    rejection_reason = models.TextField(blank=True, null=True)
+    
     class Meta:
-        db_table = 'kyc_records'
+        db_table = 'kyc'
         verbose_name = 'KYC'
-        verbose_name_plural = 'KYC Records'
-
+        verbose_name_plural = 'KYCs'
+        indexes = [
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['aadhaar_number']),
+            models.Index(fields=['pan_number']),
+        ]
+    
     def __str__(self):
-        return f"{self.user.username} - KYC ({self.status})"
+        return f"KYC for {self.user.username}"
+    
+    def is_complete(self):
+        return all([
+            self.aadhaar_verified,
+            self.pan_verified,
+            self.bank_verified,
+            self.aadhaar_number,
+            self.pan_number,
+            self.account_number,
+        ])
 
 
-# ============================================
-# DOCUMENT MANAGEMENT
-# ============================================
-class Document(TimestampedModel):
-    """Generic document storage"""
-
-    DOCUMENT_CATEGORY_CHOICES = [
-        ('agreement', 'Agreement'),
-        ('invoice', 'Invoice'),
-        ('receipt', 'Receipt'),
-        ('legal', 'Legal Document'),
-        ('compliance', 'Compliance Document'),
-        ('report', 'Report'),
+class Document(TimestampedModel, SoftDeleteModel):
+    """User documents for compliance"""
+    
+    DOCUMENT_TYPES = [
+        ('aadhaar', 'Aadhaar Card'),
+        ('pan', 'PAN Card'),
+        ('bank', 'Bank Proof'),
+        ('address', 'Address Proof'),
+        ('photo', 'Photograph'),
+        ('signature', 'Signature'),
         ('other', 'Other'),
     ]
-
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='documents')
-
-    # Uploaded by
-    uploaded_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, related_name='uploaded_documents')
-
-    # Document details
-    title = models.CharField(max_length=255)
-    category = models.CharField(
-        max_length=20, choices=DOCUMENT_CATEGORY_CHOICES)
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='documents')
+    document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPES)
     file = models.FileField(upload_to='documents/')
-    file_size = models.BigIntegerField(help_text="in bytes")
-
-    # Metadata
-    description = models.TextField(blank=True)
-    tags = models.JSONField(default=list, blank=True)
-
-    # Access control
-    is_public = models.BooleanField(default=False)
-
+    file_name = models.CharField(max_length=255)
+    file_size = models.IntegerField(help_text="Size in bytes")
+    mime_type = models.CharField(max_length=100, blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    
     class Meta:
         db_table = 'documents'
         indexes = [
-            models.Index(fields=['organization', 'category']),
+            models.Index(fields=['user', 'document_type']),
         ]
-
+    
     def __str__(self):
-        return self.title
+        return f"{self.get_document_type_display()} - {self.user.username}"
 
 
-# ============================================
-# AUDIT LOG
-# ============================================
-class AuditLog(models.Model):
-    """Comprehensive audit trail for compliance"""
-
-    ACTION_CHOICES = [
-        ('create', 'Created'),
-        ('update', 'Updated'),
-        ('delete', 'Deleted'),
-        ('approve', 'Approved'),
-        ('reject', 'Rejected'),
-        ('login', 'Logged In'),
-        ('logout', 'Logged Out'),
-        ('view', 'Viewed'),
-        ('download', 'Downloaded'),
-        ('payment', 'Payment'),
-        ('other', 'Other'),
+class AuditLog(TimestampedModel):
+    """Audit log for compliance tracking"""
+    
+    ACTION_TYPES = [
+        ('kyc_submit', 'KYC Submitted'),
+        ('kyc_approve', 'KYC Approved'),
+        ('kyc_reject', 'KYC Rejected'),
+        ('document_upload', 'Document Uploaded'),
+        ('document_delete', 'Document Deleted'),
+        ('profile_update', 'Profile Updated'),
+        ('login', 'User Login'),
+        ('logout', 'User Logout'),
+        ('password_change', 'Password Changed'),
+        ('other', 'Other Action'),
     ]
-
-    # Who
-    user = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, related_name='audit_logs')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.SET_NULL, null=True, related_name='audit_logs')
-
-    # What
-    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
-    # investments, properties, users, etc.
-    module = models.CharField(max_length=50)
+    
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
+    action = models.CharField(max_length=50, choices=ACTION_TYPES)
     description = models.TextField()
-
-    # Target (what was affected)
-    target_model = models.CharField(max_length=100, blank=True)
-    target_id = models.IntegerField(null=True, blank=True)
-
-    # Changes (JSON)
-    old_value = models.JSONField(default=dict, blank=True)
-    new_value = models.JSONField(default=dict, blank=True)
-
-    # When
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    # Where (IP, device)
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(blank=True)
-    device_type = models.CharField(max_length=50, blank=True)
-
-    # Metadata
-    metadata = models.JSONField(default=dict, blank=True)
-
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    user_agent = models.CharField(max_length=500, blank=True, null=True)
+    metadata = models.JSONField(blank=True, null=True)
+    
     class Meta:
         db_table = 'audit_logs'
         indexes = [
-            models.Index(fields=['user', 'timestamp']),
-            models.Index(fields=['organization', 'timestamp']),
-            models.Index(fields=['module', 'action']),
-            models.Index(fields=['timestamp']),
+            models.Index(fields=['user', 'action']),
+            models.Index(fields=['created_at']),
         ]
-        ordering = ['-timestamp']
-
+    
     def __str__(self):
-        return f"{self.user.username if self.user else 'System'} - {self.action} - {self.module}"
+        return f"{self.action} - {self.user.username if self.user else 'Unknown'}"

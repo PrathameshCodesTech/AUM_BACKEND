@@ -2,7 +2,7 @@
 from django.db import models
 from django.core.validators import MinValueValidator
 from decimal import Decimal
-from accounts.models import User, Organization, TimestampedModel, SoftDeleteModel
+from accounts.models import User, TimestampedModel, SoftDeleteModel
 
 # ============================================
 # WALLET
@@ -14,8 +14,6 @@ class Wallet(TimestampedModel):
 
     user = models.OneToOneField(
         User, on_delete=models.CASCADE, related_name='wallet')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='wallets')
 
     # Balance
     balance = models.DecimalField(
@@ -38,9 +36,9 @@ class Wallet(TimestampedModel):
 
     class Meta:
         db_table = 'wallets'
-        unique_together = ('user', 'organization')
+
         indexes = [
-            models.Index(fields=['user', 'organization']),
+            models.Index(fields=['user']),
         ]
 
     def __str__(self):
@@ -82,8 +80,6 @@ class Transaction(TimestampedModel):
         Wallet, on_delete=models.CASCADE, related_name='transactions')
     user = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name='transactions')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='transactions')
 
     # Transaction details
     transaction_type = models.CharField(
@@ -161,8 +157,6 @@ class Investment(TimestampedModel, SoftDeleteModel):
         User, on_delete=models.CASCADE, related_name='investments')
     property = models.ForeignKey(
         'properties.Property', on_delete=models.CASCADE, related_name='investments')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='investments')
 
     # Referred by (optional)
     referred_by_cp = models.ForeignKey(
@@ -275,8 +269,6 @@ class Payout(TimestampedModel):
         User, on_delete=models.CASCADE, related_name='payouts')
     property = models.ForeignKey(
         'properties.Property', on_delete=models.CASCADE, related_name='payouts')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='payouts')
 
     # Payout details
     payout_type = models.CharField(max_length=30, choices=PAYOUT_TYPE_CHOICES)
@@ -340,8 +332,6 @@ class RedemptionRequest(TimestampedModel):
         Investment, on_delete=models.CASCADE, related_name='redemption_requests')
     customer = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name='redemption_requests')
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='redemption_requests')
 
     # Redemption details
     units_to_redeem = models.IntegerField(validators=[MinValueValidator(1)])

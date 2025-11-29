@@ -4,25 +4,21 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.views import APIView  # 
+from investments.serializers import InvestmentSerializer
 from accounts.serializers import (
     SendOTPSerializer,
     VerifyOTPSerializer,
     UserRegistrationSerializer,
-    UserSerializer
+    UserSerializer,
+    CompleteProfileSerializer
 )
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def send_otp(request):
-    """
-    Send OTP to phone number
-
-    POST /api/auth/send-otp/
-    Body: {
-        "phone": "+919876543210"
-    }
-    """
+    """Send OTP to phone number"""
     serializer = SendOTPSerializer(data=request.data)
 
     if serializer.is_valid():
@@ -35,17 +31,7 @@ def send_otp(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_otp(request):
-    """
-    Verify OTP and login/register user
-
-    POST /api/auth/verify-otp/
-    Body: {
-        "phone": "+919876543210",
-        "otp": "123456"
-    }
-
-    Returns: JWT tokens + user info + is_new_user flag
-    """
+    """Verify OTP and login/register user"""
     serializer = VerifyOTPSerializer(data=request.data)
 
     if serializer.is_valid():
@@ -71,18 +57,7 @@ def verify_otp(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def complete_registration(request):
-    """
-    Complete user registration - Step 2 in Image 3
-
-    POST /api/auth/register/
-    Headers: Authorization: Bearer <token>
-    Body: {
-        "username": "john_doe",
-        "email": "john@example.com",
-        "date_of_birth": "1990-01-15",
-        "is_indian": true
-    }
-    """
+    """Complete user registration"""
     serializer = UserRegistrationSerializer(
         data=request.data,
         context={'user': request.user}
@@ -103,12 +78,7 @@ def complete_registration(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_current_user(request):
-    """
-    Get current logged-in user details
-
-    GET /api/auth/me/
-    Headers: Authorization: Bearer <token>
-    """
+    """Get current logged-in user details"""
     serializer = UserSerializer(request.user)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -116,15 +86,7 @@ def get_current_user(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout(request):
-    """
-    Logout user (blacklist refresh token)
-
-    POST /api/auth/logout/
-    Headers: Authorization: Bearer <token>
-    Body: {
-        "refresh": "<refresh_token>"
-    }
-    """
+    """Logout user (blacklist refresh token)"""
     try:
         refresh_token = request.data.get('refresh')
         if refresh_token:
@@ -138,3 +100,126 @@ def logout(request):
         return Response({
             'error': str(e)
         }, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class CompleteProfileView(APIView):
+    """
+    POST /api/auth/complete-profile/
+    Complete user profile (Step 2 of onboarding)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        serializer = CompleteProfileSerializer(
+            data=request.data,
+            context={'user': request.user}
+        )
+        
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        user = serializer.update(request.user, serializer.validated_data)
+        
+        return Response({
+            'success': True,
+            'message': 'Profile completed successfully',
+            'data': {
+                'username': user.username,
+                'email': user.email,
+                'date_of_birth': user.date_of_birth,
+                'is_indian': user.is_indian,
+                'profile_completed': user.profile_completed
+            }
+        }, status=status.HTTP_200_OK)
+        
+
+from .services.dashboard_service import DashboardService
+
+class DashboardStatsView(APIView):
+    """
+    GET /api/dashboard/stats/
+    Get dashboard statistics
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            stats = DashboardService.get_customer_stats(request.user)
+            
+            return Response({
+                'success': True,
+                'data': stats
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'message': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PortfolioView(APIView):
+    """
+    GET /api/portfolio/booked/
+    GET /api/portfolio/available/
+    Get portfolio properties
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, portfolio_type):
+        status_map = {
+            'booked': 'pending',
+            'active': 'active',
+            'completed': 'completed'
+        }
+        
+        status_filter = status_map.get(portfolio_type)
+        
+        investments = DashboardService.get_portfolio(request.user, status_filter)
+        serializer = InvestmentSerializer(investments, many=True, context={'request': request})
+        
+        return Response({
+            'success': True,
+            'data': serializer.data
+        }, status=status.HTTP_200_OK)
+    
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])  # For testing, change to IsAuthenticated later
+def list_all_users(request):
+    """
+    GET /api/auth/users/
+    List all users (for testing/admin)
+    """
+    from accounts.models import User
+    from accounts.serializers import UserListSerializer
+    
+    users = User.objects.all().select_related('role').order_by('-date_joined')
+    
+    users_data = []
+    for user in users:
+        users_data.append({
+            'id': user.id,
+            'username': user.username,
+            'phone': user.phone,
+            'email': user.email,
+            'phone_verified': user.phone_verified,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'role': user.role.display_name if user.role else 'No Role',
+            'is_active': user.is_active,
+            'kyc_status': user.kyc_status,
+            'profile_completed': user.profile_completed,
+            'date_joined': user.date_joined.strftime('%Y-%m-%d %H:%M:%S'),
+        })
+    
+    return Response({
+        'success': True,
+        'count': len(users_data),
+        'users': users_data
+    }, status=status.HTTP_200_OK)

@@ -38,7 +38,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
-    
+    'corsheaders',  # ← ADD THIS
+
     # Your apps
     'accounts.apps.AccountsConfig',  # Important: Use AccountsConfig for signals
     'partners',
@@ -55,6 +56,7 @@ AUTH_USER_MODEL = 'accounts.User'
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -197,7 +199,7 @@ ROUTE_MOBILE_TEMPLATE_ID_FORGOT = '1207173989148090531'  # For forgot password
 ROUTE_MOBILE_SENDER_ID = 'VBCONN'
 
 # Test Mode (Set to False for production)
-ROUTE_MOBILE_TEST_MODE = False  # Set to True for testing without sending real SMS
+ROUTE_MOBILE_TEST_MODE = True  # Set to True for testing without sending real SMS
 
 # ========================================
 # LOGGING CONFIGURATION
@@ -230,3 +232,30 @@ LOGGING = {
         },
     },
 }
+
+
+# ========================================
+# SUREPASS KYC API CONFIGURATION
+# ========================================
+
+# Surepass API credentials
+SUREPASS_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc2NDMyMzcyMiwianRpIjoiZWRiYTk5ODEtMzdlOC00NzM2LWE0MjAtZGI2MWM2NzIwNmE2IiwidHlwZSI6ImFjY2VzcyIsImlkZW50aXR5IjoiZGV2LnVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsIm5iZiI6MTc2NDMyMzcyMiwiZXhwIjoxNzY0OTI4NTIyLCJlbWFpbCI6InVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsInRlbmFudF9pZCI6Im1haW4iLCJ1c2VyX2NsYWltcyI6eyJzY29wZXMiOlsidXNlciJdfX0.y6SUpgwjfSk3snqx_PrUqfi4JmmdjLV5c0b6H1qEZtE'
+# Get from Surepass dashboard
+
+
+# SUREPASS_BASE_URL = 'https://kyc-api.surepass.io'  # Production URL
+SUREPASS_BASE_URL = 'https://sandbox.surepass.io'  # Production URL
+
+# Test Mode - Set to True for mock responses (no API calls, no charges)
+# Set to False when you have real credentials and want to use production APIs
+SUREPASS_TEST_MODE = True  
+
+# ========================================
+# MEDIA FILES CONFIGURATION
+# ========================================
+# For KYC document uploads
+
+import os
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

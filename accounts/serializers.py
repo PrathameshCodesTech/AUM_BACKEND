@@ -1,10 +1,9 @@
 # accounts/serializers.py
 from rest_framework import serializers
-from accounts.models import User, Organization, OrganizationMember, Role
+from accounts.models import User, Role
+from accounts.services import RouteMobileSMS
 from django.core.cache import cache
 import random
-# Add this import at top of serializers.py
-from accounts.services import RouteMobileSMS  # ← ADD THIS LINE
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,12 +11,15 @@ logger = logging.getLogger(__name__)
 
 class SendOTPSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15, required=True)
+    is_signup = serializers.BooleanField(required=False, default=False)
+    name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
 
     def validate_phone(self, value):
         # Remove any spaces or special characters
         phone = value.strip().replace(' ', '').replace('-', '')
 
-        # Basic validation - adjust according to your needs
+        # Add +91 prefix if not present
         if not phone.startswith('+91'):
             phone = '+91' + phone.lstrip('0')
 
@@ -26,8 +28,51 @@ class SendOTPSerializer(serializers.Serializer):
 
         return phone
 
+    def validate(self, data):
+        phone = data.get('phone')
+        is_signup = data.get('is_signup', False)
+        name = data.get('name', '')
+        email = data.get('email', '')
+
+        # Check if user exists
+        user_exists = User.objects.filter(phone=phone).exists()
+
+        # SIGNUP VALIDATION
+        if is_signup:
+            if user_exists:
+                raise serializers.ValidationError({
+                    'error': 'phone_exists',
+                    'message': 'This phone number is already registered. Please login instead.'
+                })
+            
+            # For signup, name and email are required
+            if not name or not name.strip():
+                raise serializers.ValidationError({
+                    'error': 'name_required',
+                    'message': 'Name is required for signup.'
+                })
+            
+            if not email or not email.strip():
+                raise serializers.ValidationError({
+                    'error': 'email_required',
+                    'message': 'Email is required for signup.'
+                })
+
+        # LOGIN VALIDATION
+        else:
+            if not user_exists:
+                raise serializers.ValidationError({
+                    'error': 'phone_not_found',
+                    'message': 'This phone number is not registered. Please signup first.'
+                })
+
+        return data
+
     def send_otp(self):
         phone = self.validated_data['phone']
+        is_signup = self.validated_data.get('is_signup', False)
+        name = self.validated_data.get('name', '')
+        email = self.validated_data.get('email', '')
 
         # Generate 6-digit OTP
         otp = ''.join([str(random.randint(0, 9)) for _ in range(6)])
@@ -35,18 +80,26 @@ class SendOTPSerializer(serializers.Serializer):
         # Store OTP in cache (expires in 5 minutes)
         cache_key = f"otp_{phone}"
         cache.set(cache_key, otp, timeout=300)
+        
+        # Store signup data temporarily (for new users)
+        if is_signup and (name or email):
+            signup_data = {
+                'name': name,
+                'email': email,
+                'is_signup': True
+            }
+            cache.set(f"signup_data_{phone}", signup_data, timeout=300)
 
-        logger.info(f"Generated OTP for {phone}: {otp}")
+        logger.info(f"Generated OTP for {phone}: {otp} (Signup: {is_signup})")
 
-        # Send OTP via Route Mobile ✅ NEW
+        # Send OTP via Route Mobile
         sms_service = RouteMobileSMS()
         result = sms_service.send_otp(phone, otp)
 
         if result['success']:
             # Store message_id for tracking (optional)
             if result.get('message_id'):
-                cache.set(f"otp_msg_{phone}",
-                          result['message_id'], timeout=300)
+                cache.set(f"otp_msg_{phone}", result['message_id'], timeout=300)
 
             return {
                 'success': True,
@@ -63,12 +116,28 @@ class SendOTPSerializer(serializers.Serializer):
             )
 
 
+# accounts/serializers.py
+
 class VerifyOTPSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15, required=True)
     otp = serializers.CharField(max_length=6, required=True)
 
+    def validate_phone(self, value):
+        """Normalize phone number (same as SendOTP)"""
+        # Remove any spaces or special characters
+        phone = value.strip().replace(' ', '').replace('-', '')
+
+        # Add +91 prefix if not present
+        if not phone.startswith('+91'):
+            phone = '+91' + phone.lstrip('0')
+
+        if len(phone) < 13:  # +91 (3) + 10 digits
+            raise serializers.ValidationError("Invalid phone number")
+
+        return phone
+
     def validate(self, data):
-        phone = data.get('phone')
+        phone = data.get('phone')  # Already normalized by validate_phone
         otp = data.get('otp')
 
         # Get OTP from cache
@@ -87,31 +156,64 @@ class VerifyOTPSerializer(serializers.Serializer):
         return data
 
     def get_or_create_user(self):
-        phone = self.validated_data['phone']
+        phone = self.validated_data['phone']  # Already has +91
+        
+        # Get signup data from cache (if exists)
+        signup_data = cache.get(f"signup_data_{phone}", {})
+        is_signup = signup_data.get('is_signup', False)
+        name = signup_data.get('name', '')
+        email = signup_data.get('email', '')
 
         # Check if user exists
-        user, created = User.objects.get_or_create(
-            phone=phone,
-            defaults={
-                'username': phone,  # Use phone as username initially
-                'phone_verified': True,
-            }
-        )
-
-        if not created:
-            # Update phone_verified if user exists
-            user.phone_verified = True
-            user.save()
+        try:
+            user = User.objects.get(phone=phone)
+            created = False
+            
+            # If user exists, just mark phone as verified and return
+            if not user.phone_verified:
+                user.phone_verified = True
+                user.save()
+            
+            logger.info(f"User logged in: {phone}")
+            
+        except User.DoesNotExist:
+            # User doesn't exist - should only create if is_signup=True
+            if not is_signup:
+                raise serializers.ValidationError({
+                    'error': 'user_not_found',
+                    'message': 'User not found. Please signup first.'
+                })
+            
+            # Create new user (signup flow)
+            user = User.objects.create(
+                phone=phone,
+                username=name if name else phone,
+                email=email if email else '',
+                phone_verified=True,
+                is_active=True,
+            )
+            created = True
+            
+            # Auto-assign customer role
+            try:
+                customer_role = Role.objects.get(slug='customer')
+                user.role = customer_role
+                user.save()
+                logger.info(f"Created new user and assigned customer role: {phone}")
+            except Role.DoesNotExist:
+                logger.warning("Customer role not found. Creating user without role.")
+            
+            # Clear signup data from cache after user creation
+            cache.delete(f"signup_data_{phone}")
 
         return user, created
 
 
 class UserRegistrationSerializer(serializers.Serializer):
-    """Complete user profile - connects to Image 3"""
+    """Complete user profile after OTP verification"""
     username = serializers.CharField(max_length=150, required=True)
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
-    is_indian = serializers.BooleanField(required=True)
 
     def validate_username(self, value):
         # Check if username already exists (excluding current user)
@@ -131,48 +233,21 @@ class UserRegistrationSerializer(serializers.Serializer):
         user.username = self.validated_data['username']
         user.email = self.validated_data['email']
         user.date_of_birth = self.validated_data['date_of_birth']
-
-        # Store is_indian in user or create profile if needed
-        # For now, we can store in a JSON field or extend model later
-
         user.save()
-
-        # Auto-assign user to AssetKart organization as Customer
-        self.assign_to_organization(user)
 
         return user
 
-    def assign_to_organization(self, user):
-        """Automatically assign user to AssetKart as Customer"""
-        try:
-            # Get AssetKart organization
-            org = Organization.objects.get(slug='assetkart')
 
-            # Get customer role
-            customer_role = Role.objects.get(
-                name='customer',
-                organization=org
-            )
-
-            # Create membership if doesn't exist
-            OrganizationMember.objects.get_or_create(
-                user=user,
-                organization=org,
-                defaults={
-                    'role': customer_role,
-                    'is_active': True,
-                    'is_primary': True,
-                }
-            )
-        except (Organization.DoesNotExist, Role.DoesNotExist):
-            # Log error but don't fail registration
-            print("⚠️ Warning: Could not assign user to organization")
+class RoleSerializer(serializers.ModelSerializer):
+    """Role serializer"""
+    class Meta:
+        model = Role
+        fields = ['id', 'name', 'slug', 'display_name', 'description', 'level', 'color']
 
 
 class UserSerializer(serializers.ModelSerializer):
     """User details serializer"""
-    organization = serializers.SerializerMethodField()
-    role = serializers.SerializerMethodField()
+    role = RoleSerializer(read_only=True)
     permissions = serializers.SerializerMethodField()
 
     class Meta:
@@ -180,39 +255,65 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'phone', 'phone_verified',
             'first_name', 'last_name', 'date_of_birth', 'avatar',
-            'kyc_status', 'organization', 'role', 'permissions'
+            'kyc_status', 'role', 'permissions'
         ]
         read_only_fields = ['phone', 'phone_verified', 'kyc_status']
 
-    def get_organization(self, obj):
-        """Get user's primary organization"""
-        membership = obj.memberships.filter(is_primary=True).first()
-        if membership:
-            return {
-                'id': membership.organization.id,
-                'name': membership.organization.name,
-                'slug': membership.organization.slug,
-            }
-        return None
-
-    def get_role(self, obj):
-        """Get user's role in primary organization"""
-        membership = obj.memberships.filter(is_primary=True).first()
-        if membership:
-            return {
-                'name': membership.role.name,
-                'display_name': membership.role.display_name,
-                'level': membership.role.level,
-            }
-        return None
-
     def get_permissions(self, obj):
-        """Get user's permissions"""
-        membership = obj.memberships.filter(is_primary=True).first()
-        if membership:
-            permissions = membership.role.role_permissions.values_list(
-                'permission__code_name',
-                flat=True
-            )
-            return list(permissions)
-        return []
+        """Get user's permissions via their role"""
+        if not obj.role:
+            return []
+        
+        permissions = obj.get_permissions().values_list('code_name', flat=True)
+        return list(permissions)
+
+
+class UserListSerializer(serializers.ModelSerializer):
+    """Simplified user serializer for lists"""
+    role_name = serializers.CharField(source='role.display_name', read_only=True)
+    
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email', 'phone', 
+            'first_name', 'last_name', 'role_name', 
+            'is_active', 'kyc_status'
+        ]
+
+
+
+class CompleteProfileSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150, required=True)
+    email = serializers.EmailField(required=True)
+    date_of_birth = serializers.DateField(required=True)
+    is_indian = serializers.BooleanField(required=True)
+    
+    def validate_username(self, value):
+        # Check if username already exists
+        if User.objects.filter(username=value).exclude(id=self.context['user'].id).exists():
+            raise serializers.ValidationError("Username already taken")
+        return value
+    
+    def validate_email(self, value):
+        # Check if email already exists
+        if User.objects.filter(email=value).exclude(id=self.context['user'].id).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value
+    
+    def validate_date_of_birth(self, value):
+        # Must be 18+ years old
+        from datetime import date
+        today = date.today()
+        age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+        if age < 18:
+            raise serializers.ValidationError("Must be at least 18 years old")
+        return value
+    
+    def update(self, instance, validated_data):
+        instance.username = validated_data['username']
+        instance.email = validated_data['email']
+        instance.date_of_birth = validated_data['date_of_birth']
+        instance.is_indian = validated_data['is_indian']
+        instance.profile_completed = True
+        instance.save()
+        return instance

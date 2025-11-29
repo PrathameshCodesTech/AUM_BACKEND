@@ -2,11 +2,7 @@
 from django.db import models
 from django.core.validators import MinValueValidator
 from decimal import Decimal
-from accounts.models import User, Organization, TimestampedModel, SoftDeleteModel
-
-# ============================================
-# PROPERTY/PROJECT
-# ============================================
+from accounts.models import User, TimestampedModel, SoftDeleteModel
 
 
 class Property(TimestampedModel, SoftDeleteModel):
@@ -32,9 +28,6 @@ class Property(TimestampedModel, SoftDeleteModel):
         ('mixed', 'Mixed Use'),
     ]
 
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name='properties')
-
     # Created by developer
     developer = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name='developed_properties')
@@ -43,6 +36,7 @@ class Property(TimestampedModel, SoftDeleteModel):
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
     description = models.TextField()
+    builder_name = models.CharField(max_length=255, help_text="Builder/Developer company name")
 
     property_type = models.CharField(
         max_length=20, choices=PROPERTY_TYPE_CHOICES)
@@ -52,6 +46,7 @@ class Property(TimestampedModel, SoftDeleteModel):
     city = models.CharField(max_length=100)
     state = models.CharField(max_length=100)
     country = models.CharField(max_length=100, default='India')
+    locality = models.CharField(max_length=200, blank=True, help_text="Area/Locality name")
     pincode = models.CharField(max_length=10)
     latitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True)
@@ -77,7 +72,14 @@ class Property(TimestampedModel, SoftDeleteModel):
 
     # Returns
     expected_return_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True)
+        max_digits=5, decimal_places=2, null=True, blank=True, 
+        help_text="Target IRR %")
+    gross_yield = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Gross Yield %")
+    potential_gain = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Potential Gain %")
     expected_return_period = models.IntegerField(
         help_text="in months", null=True, blank=True)
 
@@ -101,15 +103,14 @@ class Property(TimestampedModel, SoftDeleteModel):
 
     # Approval
     approved_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_properties')
+        User, on_delete=models.SET_NULL, null=True, blank=True, 
+        related_name='approved_properties')
     approved_at = models.DateTimeField(null=True, blank=True)
     rejection_reason = models.TextField(blank=True)
 
     # Features (JSON)
-    # ["Swimming Pool", "Gym", "Garden"]
     amenities = models.JSONField(default=list, blank=True)
-    highlights = models.JSONField(
-        default=list, blank=True)  # Key selling points
+    highlights = models.JSONField(default=list, blank=True)
 
     # SEO
     meta_title = models.CharField(max_length=255, blank=True)
@@ -118,15 +119,22 @@ class Property(TimestampedModel, SoftDeleteModel):
     # Visibility
     is_featured = models.BooleanField(default=False)
     is_published = models.BooleanField(default=False)
+    is_public_sale = models.BooleanField(
+        default=True, 
+        help_text="Available for public investment")
+    is_presale = models.BooleanField(
+        default=False, 
+        help_text="Pre-launch/Early bird sale")
 
     class Meta:
         db_table = 'properties'
         verbose_name_plural = 'Properties'
         indexes = [
-            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['status']),
             models.Index(fields=['slug']),
             models.Index(fields=['developer']),
             models.Index(fields=['city', 'state']),
+            models.Index(fields=['is_public_sale', 'is_presale']),
         ]
         ordering = ['-created_at']
 
@@ -188,7 +196,8 @@ class PropertyUnit(TimestampedModel):
 
     # If reserved/sold
     reserved_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reserved_units')
+        User, on_delete=models.SET_NULL, null=True, blank=True, 
+        related_name='reserved_units')
     reserved_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -202,12 +211,27 @@ class PropertyUnit(TimestampedModel):
         return f"{self.property.name} - Unit {self.unit_number}"
 
 
+
+import os
+from django.utils.text import slugify
+import uuid
+
+def property_image_upload_path(instance, filename):
+    """Generate upload path for property images"""
+    ext = filename.split('.')[-1]
+    # Create a clean filename
+    property_slug = slugify(instance.property.name)
+    unique_id = uuid.uuid4().hex[:8]
+    filename = f"{property_slug}-image-{unique_id}.{ext}"
+    return os.path.join('properties/gallery', filename)
+
+
 class PropertyImage(TimestampedModel):
     """Property images gallery"""
 
     property = models.ForeignKey(
         Property, on_delete=models.CASCADE, related_name='images')
-    image = models.ImageField(upload_to='properties/gallery/')
+    image = models.ImageField(upload_to=property_image_upload_path)  # ← CHANGED
     caption = models.CharField(max_length=255, blank=True)
     order = models.IntegerField(default=0)
 
@@ -217,6 +241,16 @@ class PropertyImage(TimestampedModel):
 
     def __str__(self):
         return f"{self.property.name} - Image {self.id}"
+
+
+def property_document_upload_path(instance, filename):
+    """Generate upload path for property documents"""
+    ext = filename.split('.')[-1]
+    property_slug = slugify(instance.property.name)
+    doc_type = instance.document_type
+    unique_id = uuid.uuid4().hex[:8]
+    filename = f"{property_slug}-{doc_type}-{unique_id}.{ext}"
+    return os.path.join('properties/documents', filename)
 
 
 class PropertyDocument(TimestampedModel):
@@ -238,10 +272,9 @@ class PropertyDocument(TimestampedModel):
     title = models.CharField(max_length=255)
     document_type = models.CharField(
         max_length=20, choices=DOCUMENT_TYPE_CHOICES)
-    file = models.FileField(upload_to='properties/documents/')
+    file = models.FileField(upload_to=property_document_upload_path)  # ← CHANGED
 
     # Access control
-    # Public or only for investors
     is_public = models.BooleanField(default=False)
 
     uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
@@ -251,3 +284,60 @@ class PropertyDocument(TimestampedModel):
 
     def __str__(self):
         return f"{self.property.name} - {self.title}"
+
+
+
+class PropertyInterest(TimestampedModel):
+    """Track user interest in properties"""
+    
+    property = models.ForeignKey(
+        Property, 
+        on_delete=models.CASCADE, 
+        related_name='interests'
+    )
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='property_interests'
+    )
+    
+    # Interest details
+    token_count = models.IntegerField(default=1)
+    message = models.TextField(blank=True)
+    
+    # Status
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('contacted', 'Contacted'),
+        ('converted', 'Converted to Investment'),
+        ('declined', 'Declined'),
+    ]
+    status = models.CharField(
+        max_length=20, 
+        choices=STATUS_CHOICES, 
+        default='pending'
+    )
+    
+    # Contact tracking
+    contacted_at = models.DateTimeField(null=True, blank=True)
+    contacted_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='contacted_interests'
+    )
+    
+    notes = models.TextField(blank=True)
+    
+    class Meta:
+        db_table = 'property_interests'
+        unique_together = ('property', 'user')  # One interest per user per property
+        indexes = [
+            models.Index(fields=['property', 'status']),
+            models.Index(fields=['user']),
+        ]
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.property.name}"
