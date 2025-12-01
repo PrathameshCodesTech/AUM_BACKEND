@@ -11,21 +11,34 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import environ
+import os
+
+
+# Initialize environment variables
+env = environ.Env(
+    DEBUG=(bool, False)
+)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-2n))0f$s)74f&ckwady!i968e8qdfyoj+y7lat%x9bj#e8*hq*'
+# SECRET_KEY = 'django-insecure-2n))0f$s)74f&ckwady!i968e8qdfyoj+y7lat%x9bj#e8*hq*'
+
+SECRET_KEY = env('SECRET_KEY')
+
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool('DEBUG', default=True)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
 
 
 # Application definition
@@ -88,10 +101,12 @@ SIMPLE_JWT = {
 }
 
 # CORS Settings (for React frontend)
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # React dev server
-    "http://localhost:5173",  # Vite dev server (if using Vite)
-]
+# CORS Settings (for React frontend)
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
+    "http://localhost:3000",
+    "http://localhost:5173",
+])
+
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -188,19 +203,37 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ROUTE MOBILE SMS GATEWAY CONFIGURATION
 # ========================================
 
+# ROUTE_MOBILE_SMS_CONFIG = {
+#     "USERNAME": "VCSMST",
+#     "PASSWORD": "[PdjH9-6",
+#     "TYPE": 5,  # ISO-8859-1 encoding
+#     "DLR": 1,   # Enable delivery report
+#     "SOURCE": "VBCONN",
+#     "ENTITY_ID": "1201173433382664591",
+#     "TEMPLATE_ID": "1207175862143571237",
+#     "BASE_URL": "https://sms6.rmlconnect.net:8443/bulksms/bulksms",
+# }
+
+
+
+# Test Mode (Set to False for real SMS)
+# ROUTE_MOBILE_TEST_MODE = True
+
+
+# Route Mobile Configuration
 ROUTE_MOBILE_SMS_CONFIG = {
-    "USERNAME": "VCSMST",
-    "PASSWORD": "[PdjH9-6",
-    "TYPE": 5,  # ISO-8859-1 encoding
-    "DLR": 1,   # Enable delivery report
-    "SOURCE": "VBCONN",
-    "ENTITY_ID": "1201173433382664591",
-    "TEMPLATE_ID": "1207175862143571237",
+    "USERNAME": env('ROUTE_MOBILE_USERNAME'),
+    "PASSWORD": env('ROUTE_MOBILE_PASSWORD'),
+    "TYPE": 5,
+    "DLR": 1,
+    "SOURCE": env('ROUTE_MOBILE_SOURCE'),
+    "ENTITY_ID": env('ROUTE_MOBILE_ENTITY_ID'),
+    "TEMPLATE_ID": env('ROUTE_MOBILE_TEMPLATE_ID'),
     "BASE_URL": "https://sms6.rmlconnect.net:8443/bulksms/bulksms",
 }
 
-# Test Mode (Set to False for real SMS)
-ROUTE_MOBILE_TEST_MODE = False
+ROUTE_MOBILE_TEST_MODE = env.bool('ROUTE_MOBILE_TEST_MODE', default=True)
+
 
 # ========================================
 # LOGGING CONFIGURATION
@@ -240,16 +273,23 @@ LOGGING = {
 # ========================================
 
 # Surepass API credentials
-SUREPASS_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc2NDMyMzcyMiwianRpIjoiZWRiYTk5ODEtMzdlOC00NzM2LWE0MjAtZGI2MWM2NzIwNmE2IiwidHlwZSI6ImFjY2VzcyIsImlkZW50aXR5IjoiZGV2LnVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsIm5iZiI6MTc2NDMyMzcyMiwiZXhwIjoxNzY0OTI4NTIyLCJlbWFpbCI6InVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsInRlbmFudF9pZCI6Im1haW4iLCJ1c2VyX2NsYWltcyI6eyJzY29wZXMiOlsidXNlciJdfX0.y6SUpgwjfSk3snqx_PrUqfi4JmmdjLV5c0b6H1qEZtE'
-# Get from Surepass dashboard
+# SUREPASS_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc2NDMyMzcyMiwianRpIjoiZWRiYTk5ODEtMzdlOC00NzM2LWE0MjAtZGI2MWM2NzIwNmE2IiwidHlwZSI6ImFjY2VzcyIsImlkZW50aXR5IjoiZGV2LnVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsIm5iZiI6MTc2NDMyMzcyMiwiZXhwIjoxNzY0OTI4NTIyLCJlbWFpbCI6InVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsInRlbmFudF9pZCI6Im1haW4iLCJ1c2VyX2NsYWltcyI6eyJzY29wZXMiOlsidXNlciJdfX0.y6SUpgwjfSk3snqx_PrUqfi4JmmdjLV5c0b6H1qEZtE'
+# # Get from Surepass dashboard
 
 
-# SUREPASS_BASE_URL = 'https://kyc-api.surepass.io'  # Production URL
-SUREPASS_BASE_URL = 'https://sandbox.surepass.io'  # Production URL
+# # SUREPASS_BASE_URL = 'https://kyc-api.surepass.io'  # Production URL
+# SUREPASS_BASE_URL = 'https://sandbox.surepass.io'  # Production URL
 
-# Test Mode - Set to True for mock responses (no API calls, no charges)
-# Set to False when you have real credentials and want to use production APIs
-SUREPASS_TEST_MODE = True  
+# # Test Mode - Set to True for mock responses (no API calls, no charges)
+# # Set to False when you have real credentials and want to use production APIs
+# SUREPASS_TEST_MODE = True  
+
+
+# Surepass Configuration
+SUREPASS_API_TOKEN = env('SUREPASS_API_TOKEN')
+SUREPASS_BASE_URL = env('SUREPASS_BASE_URL')
+SUREPASS_TEST_MODE = env.bool('SUREPASS_TEST_MODE', default=True)
+
 
 # ========================================
 # MEDIA FILES CONFIGURATION
