@@ -6,7 +6,8 @@ from .views import (
     TransactionHistoryView,
     CreateInvestmentView,
     MyInvestmentsView,
-    InvestmentDetailView
+    InvestmentDetailView,
+    PortfolioAnalyticsView
 )
 
 app_name = 'investments'
@@ -20,5 +21,6 @@ urlpatterns = [
     path('investments/create/', CreateInvestmentView.as_view(), name='create-investment'),
     path('investments/my-investments/', MyInvestmentsView.as_view(), name='my-investments'),
     path('investments/<int:investment_id>/details/', InvestmentDetailView.as_view(), name='investment-detail'),
+    path('investments/portfolio/analytics/', PortfolioAnalyticsView.as_view(), name='portfolio-analytics'),
     
 ]

@@ -164,6 +164,18 @@ class Property(TimestampedModel, SoftDeleteModel):
         self.funded_amount = total
         self.save(update_fields=['funded_amount'])
 
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base_slug = slugify(self.name)
+            slug = base_slug
+            counter = 1
+            from .models import Property  # if needed, or use self.__class__
+            while Property.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
 
 class PropertyUnit(TimestampedModel):
     """Individual units within a property"""

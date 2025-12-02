@@ -87,6 +87,39 @@ class User(AbstractUser, TimestampedModel):
     )
     kyc_verified_at = models.DateTimeField(null=True, blank=True)
 
+
+    is_admin = models.BooleanField(
+        default=False,
+        help_text="Designates whether the user has admin access"
+    )
+    is_staff = models.BooleanField(
+        default=False,
+        help_text="Designates whether the user can log into Django admin"
+    )
+    is_superuser = models.BooleanField(
+        default=False,
+        help_text="Designates that this user has all permissions"
+    )
+
+
+    # USER STATUS (ADD THESE)
+    is_verified = models.BooleanField(
+        default=False,
+        help_text="User email/phone verified"
+    )
+    is_suspended = models.BooleanField(
+        default=False,
+        help_text="User account suspended by admin"
+    )
+    suspended_reason = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Reason for suspension"
+    )
+    suspended_at = models.DateTimeField(
+        blank=True,
+        null=True
+    )
     # Account status
     is_active = models.BooleanField(default=True)
     is_blocked = models.BooleanField(default=False)

@@ -24,7 +24,9 @@ class AadhaarPDFUploadSerializer(serializers.Serializer):
     pdf_file = serializers.FileField(required=True)
     yob = serializers.CharField(required=False, max_length=4, allow_blank=True)
     full_name = serializers.CharField(required=False, max_length=255, allow_blank=True)
-    
+    pincode = serializers.CharField(required=False, max_length=6, allow_blank=True)  # 👈 ADD THIS
+
+
     def validate_pdf_file(self, value):
         if not value.name.lower().endswith('.pdf'):
             raise serializers.ValidationError("Only PDF files are allowed")
@@ -40,55 +42,145 @@ class AadhaarPDFUploadSerializer(serializers.Serializer):
         return value
     
     def verify(self, user):
-        """Verify Aadhaar PDF and update KYC"""
+        """Verify Aadhaar PDF and update KYC with validation"""
         from .services.kyc_service import SurepassKYC
+        from .utils import fuzzy_name_match, validate_dob_match
         
         pdf_file = self.validated_data['pdf_file']
         yob = self.validated_data.get('yob')
         full_name = self.validated_data.get('full_name')
         
+        # Step 1: Verify with Surepass
+        pincode = self.validated_data.get('pincode')
         kyc_service = SurepassKYC()
         result = kyc_service.verify_aadhaar_pdf(pdf_file, yob, full_name)
         
         if not result.get('success'):
-            raise serializers.ValidationError(result.get('error', 'Aadhaar verification failed'))
+            error_msg = result.get('error', 'Aadhaar verification failed')
+        
+
+             # Better error messages
+            if 'password' in error_msg.lower() or 'unlock' in error_msg.lower():
+                raise serializers.ValidationError(
+                    "Could not unlock PDF. Please ensure you entered the correct Year of Birth (YOB) "
+                    "that matches your Aadhaar card. The YOB is used as the PDF password."
+                )
+            elif 'Invalid eAadhaar PDF' in error_msg:
+                raise serializers.ValidationError(
+                    "Invalid eAadhaar PDF. Please upload a valid eAadhaar PDF downloaded from "
+                    "the official UIDAI website (https://myaadhaar.uidai.gov.in/). "
+                    "The PDF should not be modified or corrupted."
+                )
+            else:
+                raise serializers.ValidationError(error_msg)
         
         data = result.get('data', {})
+        
+        # Step 2: Get user's profile data (source of truth)
+        profile_name = user.username
+        profile_dob = user.date_of_birth
+        
+        # Step 3: Extract Aadhaar data
+        # Surepass API returns name in 'full_name' field, not 'name'
+        aadhaar_name = data.get('full_name') or data.get('name', '')
+        aadhaar_dob_str = data.get('dob', '')  # Format: YYYY-MM-DD or DD/MM/YYYY
+        
+        # Step 4: Validate Name Match
+        name_validation = fuzzy_name_match(profile_name, aadhaar_name, threshold=0.75)
+        
+        if not name_validation['match']:
+            # NAME MISMATCH - REJECT
+            error_msg = (
+                f"Name mismatch: Your profile name '{profile_name}' doesn't match "
+                f"Aadhaar name '{aadhaar_name}'. Please ensure your profile name matches your Aadhaar card."
+            )
+            logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
+            raise serializers.ValidationError(error_msg)
+        
+        # Step 5: Validate DOB Match
+        if profile_dob and aadhaar_dob_str:
+            dob_validation = validate_dob_match(profile_dob, aadhaar_dob_str)
+            
+            if not dob_validation['match']:
+                # DOB MISMATCH - REJECT
+                error_msg = (
+                    f"Date of birth mismatch: Your profile DOB doesn't match Aadhaar DOB. "
+                    f"Please ensure your profile DOB is correct."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise serializers.ValidationError(error_msg)
+        
+        # Step 6: Validation PASSED - Save data
         kyc, created = KYC.objects.get_or_create(user=user)
         
-        kyc.aadhaar_number = data.get('aadhaar_number', '').replace(' ', '')[-4:]
-        kyc.aadhaar_name = data.get('name', '')
+        # Surepass doesn't always return full aadhaar_number, might return last 4 digits or reference_id
+        aadhaar_num = data.get('aadhaar_number', '') or data.get('last_digits', '') or data.get('reference_id', '')
+        kyc.aadhaar_number = aadhaar_num.replace(' ', '')
+        kyc.aadhaar_name = aadhaar_name
         
-        dob_str = data.get('dob', '')
-        if dob_str:
+        # Store DOB
+        # Store DOB (Surepass returns YYYY-MM-DD format)
+        if aadhaar_dob_str:
             try:
                 from datetime import datetime
-                kyc.aadhaar_dob = datetime.strptime(dob_str, '%d/%m/%Y').date()
+                # Try YYYY-MM-DD format first (Surepass format)
+                kyc.aadhaar_dob = datetime.strptime(aadhaar_dob_str, '%Y-%m-%d').date()
             except:
-                pass
+                try:
+                    # Fallback to DD/MM/YYYY format
+                    kyc.aadhaar_dob = datetime.strptime(aadhaar_dob_str, '%d/%m/%Y').date()
+                except:
+                    logger.warning(f"⚠️ Could not parse DOB: {aadhaar_dob_str}")
+                    pass
         
         kyc.aadhaar_gender = data.get('gender', '')
         
-        split_addr = data.get('split_address', {})
-        if split_addr:
-            kyc.address_line1 = f"{split_addr.get('house', '')} {split_addr.get('street', '')}".strip()
-            kyc.city = split_addr.get('vtc', '')
-            kyc.state = split_addr.get('state', '')
-            kyc.pincode = split_addr.get('pincode', '')
-            kyc.aadhaar_address = data.get('address', '')
+        # Store address
+        # Store address (Surepass returns 'address' object, not 'split_address')
+        address_data = data.get('address', {}) or data.get('split_address', {})
+        if address_data:
+            house = address_data.get('house', '')
+            street = address_data.get('street', '')
+            kyc.address_line1 = f"{house} {street}".strip()
+            kyc.city = address_data.get('vtc', '') or address_data.get('dist', '')
+            kyc.state = address_data.get('state', '')
+            kyc.pincode = address_data.get('zip', '') or data.get('zip', '')
+            
+            # Build full address
+            full_addr = address_data.get('full_address', '')
+            if not full_addr:
+                # Construct from parts
+                addr_parts = [house, street, address_data.get('loc', ''), 
+                             address_data.get('vtc', ''), address_data.get('dist', ''),
+                             address_data.get('state', '')]
+                full_addr = ', '.join([p for p in addr_parts if p])
+            
+            kyc.aadhaar_address = full_addr
         
+        # Mark as verified
         kyc.aadhaar_verified = True
         kyc.aadhaar_verified_at = timezone.now()
         kyc.aadhaar_api_response = data
+        
+        # Store validation results
+        kyc.name_validation_status = 'passed'
+        kyc.dob_validation_status = 'passed' if profile_dob else 'pending'
+        kyc.name_match_score = round(name_validation['score'] * 100, 2)
+        kyc.validation_errors = {}
+        
         kyc.status = 'under_review'
         kyc.save()
         
-        logger.info(f"✅ Aadhaar PDF verified for user: {user.username}")
+        logger.info(f"✅ Aadhaar verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
         
         return {
             'success': True,
             'data': data,
-            'kyc_updated': True
+            'kyc_updated': True,
+            'validation': {
+                'name_match': name_validation,
+                'dob_match': dob_validation if profile_dob else {'match': True, 'reason': 'No DOB in profile'}
+            }
         }
 
 # ========================================
@@ -117,10 +209,26 @@ class PANVerifySerializer(serializers.Serializer):
         return value
     
     def verify(self, user):
-        """Verify PAN and update KYC"""
+        """Verify PAN and validate against Aadhaar"""
         from .services.kyc_service import SurepassKYC
+        from .utils import fuzzy_name_match
         
         pan_number = self.validated_data['pan_number']
+        
+        # Step 1: Check if Aadhaar is verified
+        try:
+            kyc = KYC.objects.get(user=user)
+            if not kyc.aadhaar_verified:
+                raise serializers.ValidationError(
+                    "Please verify your Aadhaar before verifying PAN"
+                )
+            aadhaar_name = kyc.aadhaar_name
+        except KYC.DoesNotExist:
+            raise serializers.ValidationError(
+                "Please complete Aadhaar verification first"
+            )
+        
+        # Step 2: Verify PAN with Surepass
         kyc_service = SurepassKYC()
         result = kyc_service.verify_pan(pan_number)
         
@@ -128,10 +236,34 @@ class PANVerifySerializer(serializers.Serializer):
             raise serializers.ValidationError(result.get('error', 'PAN verification failed'))
         
         data = result.get('data', {})
-        kyc, created = KYC.objects.get_or_create(user=user)
+        pan_name = data.get('full_name', '')
         
+        # Step 3: Validate PAN name against Aadhaar name
+        name_validation = fuzzy_name_match(aadhaar_name, pan_name, threshold=0.75)
+        
+        if not name_validation['match']:
+            # NAME MISMATCH - REJECT
+            error_msg = (
+                f"PAN name mismatch: PAN name '{pan_name}' doesn't match "
+                f"your Aadhaar name '{aadhaar_name}'. Please ensure your PAN is linked to your Aadhaar."
+            )
+            logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
+            
+            # Mark for manual review instead of hard rejection
+            kyc.validation_errors['pan_name_mismatch'] = {
+                'aadhaar_name': aadhaar_name,
+                'pan_name': pan_name,
+                'score': name_validation['score'],
+                'reason': name_validation['reason']
+            }
+            kyc.name_validation_status = 'needs_review'
+            kyc.save()
+            
+            raise serializers.ValidationError(error_msg)
+        
+        # Step 4: Validation PASSED - Save data
         kyc.pan_number = pan_number.upper()
-        kyc.pan_name = data.get('full_name', '')
+        kyc.pan_name = pan_name
         kyc.pan_aadhaar_linked = data.get('aadhaar_linked', False)
         kyc.pan_verified = True
         kyc.pan_verified_at = timezone.now()
@@ -139,12 +271,21 @@ class PANVerifySerializer(serializers.Serializer):
         kyc.status = 'under_review'
         kyc.save()
         
-        logger.info(f"✅ PAN verified for user: {user.username}")
+        logger.info(f"✅ PAN verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
+        
+        # Warning if PAN-Aadhaar not linked
+        warning = None
+        if not data.get('aadhaar_linked'):
+            warning = "Your PAN is not linked with Aadhaar. Please link them for better compliance."
         
         return {
             'success': True,
             'data': data,
-            'kyc_updated': True
+            'kyc_updated': True,
+            'validation': {
+                'name_match': name_validation
+            },
+            'warning': warning
         }
 
 
@@ -209,7 +350,9 @@ class BankVerifySerializer(serializers.Serializer):
         return data
     
     def save(self):
-        """Verify bank account via Surepass API"""
+        """Verify bank account and validate against Aadhaar"""
+        from .utils import fuzzy_name_match
+        
         id_number = self.validated_data.get('id_number', '')
         ifsc = self.validated_data.get('ifsc', '')
         
@@ -222,49 +365,85 @@ class BankVerifySerializer(serializers.Serializer):
                 'kyc_updated': False
             }
         
-        # Verify via Surepass
+        user = self.context.get('request').user
+        
+        # Step 1: Check if Aadhaar is verified
+        try:
+            kyc = KYC.objects.get(user=user)
+            if not kyc.aadhaar_verified:
+                raise serializers.ValidationError(
+                    "Please verify your Aadhaar before adding bank account"
+                )
+            aadhaar_name = kyc.aadhaar_name
+        except KYC.DoesNotExist:
+            raise serializers.ValidationError(
+                "Please complete Aadhaar verification first"
+            )
+        
+        # Step 2: Verify via Surepass
         kyc_service = SurepassKYC()
         result = kyc_service.verify_bank_account(id_number, ifsc)
         
         if not result['success']:
             raise serializers.ValidationError(result.get('error', 'Bank verification failed'))
         
-        # Update KYC record
-        user = self.context.get('request').user
-        kyc, created = KYC.objects.get_or_create(user=user)
-        
         bank_data = result.get('data', {})
+        bank_name = bank_data.get('name_at_bank', '')
         
-        # Store bank details
+        # Step 3: Validate bank name against Aadhaar name
+        name_validation = fuzzy_name_match(aadhaar_name, bank_name, threshold=0.70)  # Slightly lower threshold
+        
+        if not name_validation['match']:
+            # NAME MISMATCH - REJECT
+            error_msg = (
+                f"Bank account name mismatch: Account holder name '{bank_name}' doesn't match "
+                f"your Aadhaar name '{aadhaar_name}'. Please use a bank account in your name."
+            )
+            logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
+            
+            # Store error for admin review
+            kyc.validation_errors['bank_name_mismatch'] = {
+                'aadhaar_name': aadhaar_name,
+                'bank_name': bank_name,
+                'score': name_validation['score'],
+                'reason': name_validation['reason']
+            }
+            kyc.name_validation_status = 'needs_review'
+            kyc.save()
+            
+            raise serializers.ValidationError(error_msg)
+        
+        # Step 4: Validation PASSED - Save bank details
         kyc.account_number = id_number
         kyc.ifsc_code = ifsc
-        kyc.account_holder_name = bank_data.get('name_at_bank') or bank_data.get('full_name')
+        kyc.account_holder_name = bank_name
         kyc.bank_name = bank_data.get('bank_name')
         kyc.bank_verified = True
         kyc.bank_verified_at = timezone.now()
         kyc.bank_api_response = bank_data
         
-        # Update KYC status if pending
         if kyc.status == 'pending':
             kyc.status = 'under_review'
         
         kyc.save()
         
-        logger.info(f"✅ Bank account verified and stored for user: {user.username}")
+        logger.info(f"✅ Bank account verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
         
         return {
             'success': True,
             'message': 'Bank account verified successfully',
             'data': {
-                'account_number': id_number[-4:].rjust(len(id_number), '*'),  # Masked
+                'account_number': id_number[-4:].rjust(len(id_number), '*'),
                 'ifsc': ifsc,
-                'account_holder_name': kyc.account_holder_name,
+                'account_holder_name': bank_name,
                 'bank_name': kyc.bank_name,
                 'verified': True
             },
-            'kyc_updated': True
+            'kyc_updated': True,
+            'validation': {
+                'name_match': name_validation
+            }
         }
-
 
 # ========================================
 # COMPLETE KYC SERIALIZER

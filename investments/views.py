@@ -239,3 +239,201 @@ class InvestmentDetailView(APIView):
                 'success': False,
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from django.db.models import Sum, Avg
+from decimal import Decimal
+from .models import Investment
+from properties.models import Property
+
+
+class PortfolioAnalyticsView(APIView):
+    """
+    GET /api/portfolio/analytics/
+    Returns aggregated portfolio analytics
+    Mode: 'demo' if no investments, 'personal' if has investments
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get user's approved investments
+        investments = Investment.objects.filter(
+            customer=request.user,
+            status='approved'
+        ).select_related('property')
+        
+        if not investments.exists():
+            # NO INVESTMENTS - Return demo/sample data
+            return Response({
+                'success': True,
+                'mode': 'demo',
+                'message': 'Start investing to see your portfolio analytics',
+                'data': self._get_demo_data()
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            # HAS INVESTMENTS - Return real aggregated data
+            return Response({
+                'success': True,
+                'mode': 'personal',
+                'message': 'Your live portfolio analytics',
+                'data': self._get_personal_data(investments)
+            }, status=status.HTTP_200_OK)
+    
+    def _get_demo_data(self):
+        """Returns static demo data for users with no investments"""
+        return {
+            'total_invested': 0,
+            'current_value': 5000000,  # Sample 50 lakhs
+            'total_returns': 925000,    # Sample returns
+            'total_roi': 18.5,
+            'properties_count': 0,
+            'portfolio_breakdown': [
+                {
+                    'property_name': 'DLF Garden City',
+                    'property_id': None,
+                    'invested': 2000000,
+                    'current_value': 2400000,
+                    'roi': 20.0,
+                    'percentage': 40.0
+                },
+                {
+                    'property_name': 'Prestige Lakeside Habitat',
+                    'property_id': None,
+                    'invested': 1500000,
+                    'current_value': 1725000,
+                    'roi': 15.0,
+                    'percentage': 30.0
+                },
+                {
+                    'property_name': 'Godrej Summit',
+                    'property_id': None,
+                    'invested': 1500000,
+                    'current_value': 1770000,
+                    'roi': 18.0,
+                    'percentage': 30.0
+                }
+            ],
+            'roi_breakdown': [
+                {'name': 'Rental Yield', 'value': 6.5, 'color': '#10B981'},
+                {'name': 'Capital Appreciation', 'value': 8.0, 'color': '#F59E0B'},
+                {'name': 'Target IRR', 'value': 15.5, 'color': '#3B82F6'}
+            ],
+            'portfolio_growth': [
+                {'month': 'Jan 2024', 'value': 5000000},
+                {'month': 'Feb 2024', 'value': 5100000},
+                {'month': 'Mar 2024', 'value': 5250000},
+                {'month': 'Apr 2024', 'value': 5350000},
+                {'month': 'May 2024', 'value': 5500000},
+                {'month': 'Jun 2024', 'value': 5650000},
+                {'month': 'Jul 2024', 'value': 5750000},
+                {'month': 'Aug 2024', 'value': 5850000},
+                {'month': 'Sep 2024', 'value': 5925000}
+            ],
+            'payout_history': [
+                {'quarter': 'Q1 2024', 'amount': 75000, 'type': 'actual'},
+                {'quarter': 'Q2 2024', 'amount': 85000, 'type': 'actual'},
+                {'quarter': 'Q3 2024', 'amount': 95000, 'type': 'actual'},
+                {'quarter': 'Q4 2024', 'amount': 105000, 'type': 'projected'},
+                {'quarter': 'Q1 2025', 'amount': 120000, 'type': 'projected'}
+            ],
+            'property_types': [
+                {'type': 'Residential', 'value': 60, 'color': '#10B981'},
+                {'type': 'Commercial', 'value': 30, 'color': '#3B82F6'},
+                {'type': 'Mixed-Use', 'value': 10, 'color': '#F59E0B'}
+            ]
+        }
+    
+    def _get_personal_data(self, investments):
+        """Returns real aggregated data from user's investments"""
+        # Calculate totals
+        total_invested = sum(float(inv.amount) for inv in investments)
+        total_returns = sum(float(inv.actual_return_amount or 0) for inv in investments)
+        current_value = total_invested + total_returns
+        total_roi = (total_returns / total_invested * 100) if total_invested > 0 else 0
+        
+        # Portfolio breakdown by property
+        portfolio_breakdown = []
+        for inv in investments:
+            invested = float(inv.amount)
+            returns = float(inv.actual_return_amount or 0)
+            prop_current_value = invested + returns
+            prop_roi = (returns / invested * 100) if invested > 0 else 0
+            percentage = (invested / total_invested * 100) if total_invested > 0 else 0
+            
+            portfolio_breakdown.append({
+                'property_name': inv.property.name,
+                'property_id': inv.property.id,
+                'property_slug': inv.property.slug,
+                'invested': invested,
+                'current_value': prop_current_value,
+                'roi': round(prop_roi, 2),
+                'percentage': round(percentage, 2)
+            })
+        
+        # ROI breakdown (average from properties)
+        active_investments = [inv for inv in investments if inv.property]
+        avg_yield = sum(float(inv.property.gross_yield or 0) for inv in active_investments) / len(active_investments) if active_investments else 0
+        avg_gain = sum(float(inv.property.potential_gain or 0) for inv in active_investments) / len(active_investments) if active_investments else 0
+        avg_irr = sum(float(inv.property.expected_return_percentage or 0) for inv in active_investments) / len(active_investments) if active_investments else 0
+        
+        roi_breakdown = [
+            {'name': 'Rental Yield', 'value': round(avg_yield, 2), 'color': '#10B981'},
+            {'name': 'Capital Appreciation', 'value': round(avg_gain, 2), 'color': '#F59E0B'},
+            {'name': 'Target IRR', 'value': round(avg_irr, 2), 'color': '#3B82F6'}
+        ]
+        
+        # Portfolio growth (mock data - implement real historical tracking later)
+        portfolio_growth = []
+        for i in range(9):
+            growth_rate = 0.015 + (i * 0.002)
+            portfolio_growth.append({
+                'month': f'Month {i+1}',
+                'value': round(total_invested * (1 + growth_rate * i))
+            })
+        
+        # Payout history (mock data - implement real payout tracking later)
+        payout_history = [
+            {'quarter': 'Q1 2024', 'amount': total_returns * 0.2, 'type': 'actual'},
+            {'quarter': 'Q2 2024', 'amount': total_returns * 0.25, 'type': 'actual'},
+            {'quarter': 'Q3 2024', 'amount': total_returns * 0.3, 'type': 'actual'},
+            {'quarter': 'Q4 2024', 'amount': total_returns * 0.15, 'type': 'projected'},
+            {'quarter': 'Q1 2025', 'amount': total_returns * 0.1, 'type': 'projected'}
+        ]
+        
+        # Property types distribution
+        property_types_count = {}
+        for inv in investments:
+            prop_type = inv.property.property_type
+            if prop_type not in property_types_count:
+                property_types_count[prop_type] = 0
+            property_types_count[prop_type] += float(inv.amount)
+        
+        property_types = []
+        colors = ['#10B981', '#3B82F6', '#F59E0B', '#EF4444']
+        for idx, (prop_type, amount) in enumerate(property_types_count.items()):
+            percentage = (amount / total_invested * 100) if total_invested > 0 else 0
+            property_types.append({
+                'type': prop_type.title(),
+                'value': round(percentage, 1),
+                'color': colors[idx % len(colors)]
+            })
+        
+        return {
+            'total_invested': round(total_invested, 2),
+            'current_value': round(current_value, 2),
+            'total_returns': round(total_returns, 2),
+            'total_roi': round(total_roi, 2),
+            'properties_count': investments.count(),
+            'portfolio_breakdown': portfolio_breakdown,
+            'roi_breakdown': roi_breakdown,
+            'portfolio_growth': portfolio_growth,
+            'payout_history': payout_history,
+            'property_types': property_types
+        }

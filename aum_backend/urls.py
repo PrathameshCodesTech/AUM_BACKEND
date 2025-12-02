@@ -25,6 +25,12 @@ urlpatterns = [
     path('api/kyc/', include('compliance.urls')),  # ← ADD THIS
     path('api/wallet/', include('investments.urls')),
     path('api/properties/', include('properties.urls')),
+
+    # Admin APIs (new)
+    path('api/admin/', include('accounts.admin_urls')),       # 👈 ADD THIS
+    path('api/admin/kyc/', include('compliance.admin_urls')), # 👈 ADD THIS
+    path('api/admin/properties/', include('properties.admin_urls')), # 👈 ADD THIS
+    path('api/admin/investments/', include('investments.admin_urls')), 
 ]
 
 if settings.DEBUG:

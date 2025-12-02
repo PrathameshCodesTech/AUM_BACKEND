@@ -78,6 +78,39 @@ class KYC(TimestampedModel, SoftDeleteModel):
     aadhaar_last_retry_at = models.DateTimeField(null=True, blank=True)
     pan_retry_count = models.IntegerField(default=0)
     pan_last_retry_at = models.DateTimeField(null=True, blank=True)
+
+
+    name_validation_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', 'Pending'),
+            ('passed', 'Passed'),
+            ('failed', 'Failed'),
+            ('needs_review', 'Needs Manual Review')
+        ],
+        default='pending'
+    )
+    dob_validation_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', 'Pending'),
+            ('passed', 'Passed'),
+            ('failed', 'Failed')
+        ],
+        default='pending'
+    )
+    validation_errors = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Stores validation error details"
+    )
+    name_match_score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Name similarity score (0-100)"
+    )
     
     class Meta:
         db_table = 'kyc'

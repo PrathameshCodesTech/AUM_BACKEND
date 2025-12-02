@@ -17,7 +17,7 @@ from .serializers import (
     KYCStatusSerializer,
     KYCApprovalSerializer,
 )
-from accounts.permissions import HasPermission
+from accounts.permissions import HasPermission,IsAdmin  
 import logging
 from .serializers import AadhaarPDFUploadSerializer
 from rest_framework import serializers  # 👈 ADD THIS LINE
@@ -272,32 +272,79 @@ class MyKYCStatusView(APIView):
 # ========================================
 # ADMIN APIs
 # ========================================
+# ========================================
+# ADMIN APIs
+# ========================================
+
+from .admin_serializers import (
+    AdminKYCListSerializer,
+    AdminKYCDetailSerializer,
+    AdminKYCActionSerializer
+)
 
 class PendingKYCListView(generics.ListAPIView):
     """
-    GET /api/kyc/admin/pending/
-    
+    GET /api/admin/kyc/pending/
     List all pending KYC submissions (Admin only)
     """
-    permission_classes = [IsAuthenticated, HasPermission]
-    permission_required = 'compliance.view_kyc'
-    serializer_class = KYCSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+    serializer_class = AdminKYCListSerializer
     
     def get_queryset(self):
         return KYC.objects.filter(
             status__in=['pending', 'under_review']
-        ).order_by('-created_at')
+        ).select_related('user').order_by('-created_at')
+
+
+class AllKYCListView(generics.ListAPIView):
+    """
+    GET /api/admin/kyc/all/
+    List all KYC submissions (Admin only)
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    serializer_class = AdminKYCListSerializer
+    
+    def get_queryset(self):
+        queryset = KYC.objects.all().select_related('user').order_by('-created_at')
+        
+        # Optional filters
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        return queryset
+
+
+class KYCDetailView(APIView):
+    """
+    GET /api/admin/kyc/{kyc_id}/
+    Get detailed KYC info (Admin only)
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    def get(self, request, kyc_id):
+        try:
+            kyc = KYC.objects.select_related('user', 'verified_by').get(id=kyc_id)
+            serializer = AdminKYCDetailSerializer(kyc)
+            
+            return Response({
+                'success': True,
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except KYC.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'KYC not found'
+            }, status=status.HTTP_404_NOT_FOUND)
 
 
 class KYCApprovalView(APIView):
     """
-    POST /api/kyc/admin/{kyc_id}/approve/
-    POST /api/kyc/admin/{kyc_id}/reject/
-    
+    POST /api/admin/kyc/{kyc_id}/action/
     Approve or reject KYC submission (Admin only)
     """
-    permission_classes = [IsAuthenticated, HasPermission]
-    permission_required = 'compliance.approve_kyc'
+    permission_classes = [IsAuthenticated, IsAdmin]
     
     def post(self, request, kyc_id):
         try:
@@ -308,7 +355,7 @@ class KYCApprovalView(APIView):
                 'message': 'KYC not found'
             }, status=status.HTTP_404_NOT_FOUND)
         
-        serializer = KYCApprovalSerializer(data=request.data)
+        serializer = AdminKYCActionSerializer(data=request.data)
         
         if not serializer.is_valid():
             return Response({
@@ -338,26 +385,10 @@ class KYCApprovalView(APIView):
         return Response({
             'success': True,
             'message': message,
-            'data': KYCSerializer(kyc).data
-        }, status=status.HTTP_200_OK)
+            'data': AdminKYCDetailSerializer(kyc).data
+        }, status=status.HTTP_200_OK)    
 
 
-class AllKYCListView(generics.ListAPIView):
-    """
-    GET /api/kyc/admin/all/
-    
-    List all KYC submissions (Admin only)
-    """
-    permission_classes = [IsAuthenticated, HasPermission]
-    permission_required = 'compliance.view_kyc'
-    serializer_class = KYCSerializer
-    
-    def get_queryset(self):
-        queryset = KYC.objects.all().order_by('-created_at')
-        
-        # Optional filters
-        status_filter = self.request.query_params.get('status')
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-        
-        return queryset
+
+
+
