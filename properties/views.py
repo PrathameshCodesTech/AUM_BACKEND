@@ -387,3 +387,6 @@ class PropertyAnalyticsView(APIView):
                 "success": False,
                 "message": f"Error: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+

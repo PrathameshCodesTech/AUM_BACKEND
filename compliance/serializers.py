@@ -7,6 +7,8 @@ from .models import KYC
 from .services import SurepassKYC
 import logging
 from django.utils import timezone
+from django.conf import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -351,11 +353,11 @@ class BankVerifySerializer(serializers.Serializer):
     
     def save(self):
         """Verify bank account and validate against Aadhaar"""
-        from .utils import fuzzy_name_match
-        
+        from .utils import fuzzy_name_match  # keep if you still use later
+
         id_number = self.validated_data.get('id_number', '')
         ifsc = self.validated_data.get('ifsc', '')
-        
+
         # If no data provided, skip bank verification
         if not id_number or not ifsc:
             return {
@@ -364,9 +366,9 @@ class BankVerifySerializer(serializers.Serializer):
                 'data': {},
                 'kyc_updated': False
             }
-        
+
         user = self.context.get('request').user
-        
+
         # Step 1: Check if Aadhaar is verified
         try:
             kyc = KYC.objects.get(user=user)
@@ -379,70 +381,112 @@ class BankVerifySerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Please complete Aadhaar verification first"
             )
-        
-        # Step 2: Verify via Surepass
+
+        # ✅ TEST MODE FOR BANK ONLY – NO SUREPASS CALL, NO NAME MISMATCH
+        if getattr(settings, "SUREPASS_BANK_TEST_MODE", False):
+            masked_acc = id_number[-4:].rjust(len(id_number), '*')
+            account_holder = aadhaar_name or user.get_full_name() or user.username
+
+            kyc.account_number = id_number
+            kyc.ifsc_code = ifsc
+            kyc.account_holder_name = account_holder
+            kyc.bank_name = "TEST BANK (MOCK)"
+            kyc.bank_verified = True
+            kyc.bank_verified_at = timezone.now()
+            kyc.bank_api_response = {
+                "mock": True,
+                "note": "Bank verification skipped in test mode"
+            }
+            if kyc.status == "pending":
+                kyc.status = "under_review"
+            kyc.save()
+
+            return {
+                "success": True,
+                "message": "Bank account verified successfully (TEST MODE)",
+                "data": {
+                    "account_number": masked_acc,
+                    "ifsc": ifsc,
+                    "account_holder_name": account_holder,
+                    "bank_name": kyc.bank_name,
+                    "verified": True,
+                },
+                "kyc_updated": True,
+                "validation": {
+                    "name_match": {
+                        "match": True,
+                        "score": 1.0,
+                        "reason": "Test mode - name check skipped",
+                    }
+                },
+            }
+
+        # =========================
+        # NORMAL LIVE FLOW (SUREPASS)
+        # =========================
         kyc_service = SurepassKYC()
         result = kyc_service.verify_bank_account(id_number, ifsc)
-        
-        if not result['success']:
-            raise serializers.ValidationError(result.get('error', 'Bank verification failed'))
-        
-        bank_data = result.get('data', {})
-        bank_name = bank_data.get('name_at_bank', '')
-        
+
+        if not result["success"]:
+            raise serializers.ValidationError(result.get("error", "Bank verification failed"))
+
+        bank_data = result.get("data", {})
+        bank_name = bank_data.get("name_at_bank", "")
+
         # Step 3: Validate bank name against Aadhaar name
-        name_validation = fuzzy_name_match(aadhaar_name, bank_name, threshold=0.70)  # Slightly lower threshold
-        
-        if not name_validation['match']:
-            # NAME MISMATCH - REJECT
+        name_validation = fuzzy_name_match(aadhaar_name, bank_name, threshold=0.70)
+
+        if not name_validation["match"]:
             error_msg = (
                 f"Bank account name mismatch: Account holder name '{bank_name}' doesn't match "
                 f"your Aadhaar name '{aadhaar_name}'. Please use a bank account in your name."
             )
             logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
-            
-            # Store error for admin review
-            kyc.validation_errors['bank_name_mismatch'] = {
-                'aadhaar_name': aadhaar_name,
-                'bank_name': bank_name,
-                'score': name_validation['score'],
-                'reason': name_validation['reason']
+
+            kyc.validation_errors["bank_name_mismatch"] = {
+                "aadhaar_name": aadhaar_name,
+                "bank_name": bank_name,
+                "score": name_validation["score"],
+                "reason": name_validation["reason"],
             }
-            kyc.name_validation_status = 'needs_review'
+            kyc.name_validation_status = "needs_review"
             kyc.save()
-            
+
             raise serializers.ValidationError(error_msg)
-        
+
         # Step 4: Validation PASSED - Save bank details
         kyc.account_number = id_number
         kyc.ifsc_code = ifsc
         kyc.account_holder_name = bank_name
-        kyc.bank_name = bank_data.get('bank_name')
+        kyc.bank_name = bank_data.get("bank_name")
         kyc.bank_verified = True
         kyc.bank_verified_at = timezone.now()
         kyc.bank_api_response = bank_data
-        
-        if kyc.status == 'pending':
-            kyc.status = 'under_review'
-        
+
+        if kyc.status == "pending":
+            kyc.status = "under_review"
+
         kyc.save()
-        
-        logger.info(f"✅ Bank account verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
-        
+
+        logger.info(
+            f"✅ Bank account verified and validated for user: {user.username} "
+            f"(Name match: {name_validation['score']:.2%})"
+        )
+
         return {
-            'success': True,
-            'message': 'Bank account verified successfully',
-            'data': {
-                'account_number': id_number[-4:].rjust(len(id_number), '*'),
-                'ifsc': ifsc,
-                'account_holder_name': bank_name,
-                'bank_name': kyc.bank_name,
-                'verified': True
+            "success": True,
+            "message": "Bank account verified successfully",
+            "data": {
+                "account_number": id_number[-4:].rjust(len(id_number), "*"),
+                "ifsc": ifsc,
+                "account_holder_name": bank_name,
+                "bank_name": kyc.bank_name,
+                "verified": True,
             },
-            'kyc_updated': True,
-            'validation': {
-                'name_match': name_validation
-            }
+            "kyc_updated": True,
+            "validation": {
+                "name_match": name_validation,
+            },
         }
 
 # ========================================

@@ -21,11 +21,9 @@ class Property(TimestampedModel, SoftDeleteModel):
     ]
 
     PROPERTY_TYPE_CHOICES = [
-        ('residential', 'Residential'),
-        ('commercial', 'Commercial'),
-        ('industrial', 'Industrial'),
-        ('land', 'Land'),
-        ('mixed', 'Mixed Use'),
+        ('equity', 'Equity'),
+        ('debt_income', 'Debt Income'),
+        ('hybrid', 'Hybrid'),
     ]
 
     # Created by developer

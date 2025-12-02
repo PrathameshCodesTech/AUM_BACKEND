@@ -23,6 +23,8 @@ class SurepassKYC:
         # 👇 NEW: Different base URLs for different APIs
         self.sandbox_url = 'https://sandbox.surepass.io'  # For Aadhaar & PAN
         self.production_url = 'https://kyc-api.surepass.io'  # For Bank only
+
+        self.base_url = getattr(settings, 'SUREPASS_BASE_URL', self.sandbox_url)
         
         if not self.test_mode and not self.api_token:
             logger.warning("⚠️  Surepass API token not configured!")
@@ -434,86 +436,84 @@ class SurepassKYC:
             dict with verification result
         """
         logger.info(f"🏦 Verifying bank account: ****{account_number[-4:]}")
-        
+
+        # ✅ Use mock when TEST_MODE = True
         if self.test_mode:
             return self._mock_bank_response(account_number, ifsc_code)
-        
+
         try:
-            # 👇 ALWAYS use production URL for Bank (no sandbox!)
-            url = f"{self.production_url}/api/v1/bank-verification/"
-            
+            # ✅ Use SUREPASS_BASE_URL from settings (sandbox or prod)
+            base_url = (self.base_url or self.production_url).rstrip('/')
+            url = f"{base_url}/api/v1/bank-verification/"
+
             payload = {
                 'id_number': account_number,
                 'ifsc': ifsc_code.upper(),
                 'ifsc_details': True
             }
-            
+
             logger.info(f"📡 Calling Surepass Bank API: {url}")
             logger.info(f"📦 Payload: {payload}")
-            
+
             response = requests.post(
                 url,
                 json=payload,
                 headers=self._get_headers(),
                 timeout=30
             )
-            
+
             logger.info(f"📡 Response status: {response.status_code}")
-            
-            response.raise_for_status()
             result = response.json()
-            
             logger.info(f"📦 Response data: {result}")
-            
-            if result.get('success'):
-                data = result.get('data', {})
-                
-                # Check account_exists flag
-                if not data.get('account_exists'):
-                    logger.error(f"❌ Bank account does not exist")
-                    return {
-                        'success': False,
-                        'error': 'Bank account does not exist or is invalid'
-                    }
-                
-                # Extract IFSC details if available
-                ifsc_details = data.get('ifsc_details', {})
-                
-                logger.info(f"✅ Bank account verified: {data.get('full_name', 'Unknown')}")
-                
-                return {
-                    'success': True,
-                    'data': {
-                        'account_exists': data.get('account_exists', True),
-                        'name_at_bank': data.get('full_name', ''),
-                        'account_number': account_number[-4:].rjust(len(account_number), '*'),
-                        'ifsc': ifsc_code.upper(),
-                        'bank_name': ifsc_details.get('bank_name', ''),
-                        'branch': ifsc_details.get('branch', ''),
-                        'city': ifsc_details.get('city', ''),
-                        'state': ifsc_details.get('state', ''),
-                        'upi_enabled': ifsc_details.get('upi', False),
-                        'imps_enabled': ifsc_details.get('imps', False),
-                        'neft_enabled': ifsc_details.get('neft', False),
-                        'rtgs_enabled': ifsc_details.get('rtgs', False),
-                        'status': data.get('status', 'success')
-                    },
-                    'message': 'Bank account verified successfully'
-                }
-            else:
+
+            if not result.get('success'):
                 error_msg = result.get('message', 'Bank verification failed')
                 logger.error(f"❌ Bank verification failed: {error_msg}")
                 return {
                     'success': False,
                     'error': error_msg
                 }
-        
+
+            data = result.get('data', {})
+
+            if not data.get('account_exists'):
+                logger.error("❌ Bank account does not exist")
+                return {
+                    'success': False,
+                    'error': 'Bank account does not exist or is invalid'
+                }
+
+            ifsc_details = data.get('ifsc_details', {})
+
+            logger.info(f"✅ Bank account verified: {data.get('full_name', 'Unknown')}")
+
+            return {
+                'success': True,
+                'data': {
+                    'account_exists': data.get('account_exists', True),
+                    'name_at_bank': data.get('full_name', ''),
+                    'account_number': account_number[-4:].rjust(len(account_number), '*'),
+                    'ifsc': ifsc_code.upper(),
+                    'bank_name': ifsc_details.get('bank_name', ''),
+                    'branch': ifsc_details.get('branch', ''),
+                    'city': ifsc_details.get('city', ''),
+                    'state': ifsc_details.get('state', ''),
+                    'upi_enabled': ifsc_details.get('upi', False),
+                    'imps_enabled': ifsc_details.get('imps', False),
+                    'neft_enabled': ifsc_details.get('neft', False),
+                    'rtgs_enabled': ifsc_details.get('rtgs', False),
+                    'status': data.get('status', 'success')
+                },
+                'message': 'Bank account verified successfully'
+            }
+
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Bank verification failed: {str(e)}")
             return {
                 'success': False,
                 'error': f'Bank verification failed: {str(e)}'
             }
+
     
     def _mock_bank_response(self, account_number: str, ifsc_code: str) -> dict:
         """Return mock bank response for testing"""

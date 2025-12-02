@@ -4,6 +4,10 @@ KYC, Documents, and Audit Log models
 """
 from django.db import models  # ← THIS LINE IS CRITICAL!
 from accounts.models import User, TimestampedModel, SoftDeleteModel
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 class KYC(TimestampedModel, SoftDeleteModel):

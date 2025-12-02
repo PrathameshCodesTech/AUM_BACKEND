@@ -289,6 +289,7 @@ LOGGING = {
 SUREPASS_API_TOKEN = env('SUREPASS_API_TOKEN')
 SUREPASS_BASE_URL = env('SUREPASS_BASE_URL')
 SUREPASS_TEST_MODE = env.bool('SUREPASS_TEST_MODE', default=True)
+SUREPASS_BANK_TEST_MODE = env.bool('SUREPASS_BANK_TEST_MODE', default=False)
 
 
 # ========================================

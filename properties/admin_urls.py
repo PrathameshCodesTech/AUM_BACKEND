@@ -27,6 +27,8 @@ from .admin_views import (
     PropertyUnitCreateView,
     PropertyUnitUpdateView,
     PropertyUnitDeleteView,
+
+    PropertyTypeListView
 )
 
 urlpatterns = [
@@ -53,4 +55,5 @@ urlpatterns = [
     path('<int:property_id>/units/create/', PropertyUnitCreateView.as_view(), name='admin-property-unit-create'),
     path('<int:property_id>/units/<int:unit_id>/update/', PropertyUnitUpdateView.as_view(), name='admin-property-unit-update'),
     path('<int:property_id>/units/<int:unit_id>/', PropertyUnitDeleteView.as_view(), name='admin-property-unit-delete'),
+    path("types/", PropertyTypeListView.as_view(), name="admin-property-types")
 ]
