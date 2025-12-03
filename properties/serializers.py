@@ -129,26 +129,12 @@ class PropertyDetailSerializer(serializers.ModelSerializer):
 class PropertyAnalyticsSerializer(serializers.Serializer):
     """Analytics data for property showcase page"""
     
-    # Basic property info
     property = PropertyListSerializer(read_only=True)
-    
-    # Chart 1: Funding Sources (Pie Chart) 
     funding_breakdown = serializers.ListField(child=serializers.DictField())
-    
-    # Chart 2: Price History (Line Chart)
     price_history = serializers.ListField(child=serializers.DictField())
-    
-    # Chart 3: Payout History (Bar Chart)
     payout_history = serializers.ListField(child=serializers.DictField())
-    
-    # Chart 4: ROI Breakdown (Donut Chart)
     roi_breakdown = serializers.ListField(child=serializers.DictField())
-    
-    # Chart 5: Progress Metrics
     progress_metrics = serializers.DictField()
-    
-    # Calculator inputs
     calculator = serializers.DictField()
-    
-    # Key metrics
     key_metrics = serializers.DictField()
+    expected_earnings = serializers.DictField()  # NEW
