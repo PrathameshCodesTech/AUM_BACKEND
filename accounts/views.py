@@ -28,11 +28,23 @@ def send_otp(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_otp(request):
     """Verify OTP and login/register user"""
-    serializer = VerifyOTPSerializer(data=request.data)
+    # Extract referral parameters from request
+    invite_code = request.data.get('invite_code') or request.query_params.get('invite')
+    referral_code = request.data.get('referral_code') or request.query_params.get('ref')
+    
+    # Pass referral info to serializer context
+    serializer = VerifyOTPSerializer(
+        data=request.data,
+        context={
+            'invite_code': invite_code,
+            'referral_code': referral_code,
+        }
+    )
 
     if serializer.is_valid():
         user, is_new = serializer.get_or_create_user()
@@ -52,7 +64,6 @@ def verify_otp(request):
         }, status=status.HTTP_200_OK)
 
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])

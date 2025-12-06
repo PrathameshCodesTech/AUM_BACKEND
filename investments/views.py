@@ -136,7 +136,8 @@ class CreateInvestmentView(APIView):
                 user=request.user,
                 property_obj=serializer.validated_data['property'],
                 amount=serializer.validated_data['amount'],
-                units_count=serializer.validated_data['units_count']
+                units_count=serializer.validated_data['units_count'],
+                referral_code=serializer.validated_data.get('referral_code')  # ← NEW
             )
             
             logger.info(f"✅ Investment service returned: {investment.investment_id}")

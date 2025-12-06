@@ -186,6 +186,10 @@ class VerifyOTPSerializer(serializers.Serializer):
         is_signup = signup_data.get('is_signup', False)
         name = signup_data.get('name', '')
         email = signup_data.get('email', '')
+        
+        # Get referral codes from context
+        invite_code = self.context.get('invite_code')
+        referral_code = self.context.get('referral_code')
 
         # Check if user exists
         try:
@@ -228,6 +232,71 @@ class VerifyOTPSerializer(serializers.Serializer):
             
             # Clear signup data from cache after user creation
             cache.delete(f"signup_data_{phone}")
+            
+            # ============================================
+            # HANDLE CP REFERRAL CODES (NEW)
+            # ============================================
+            if created:
+                try:
+                    from partners.services.referral_service import ReferralService
+                    from partners.models import CPCustomerRelation, CPLead, CPInvite
+                    from django.utils import timezone
+                    
+                    # Priority 1: Handle CP Invite Code
+                    if invite_code:
+                        try:
+                            invite = CPInvite.objects.get(
+                                invite_code=invite_code,
+                                is_used=False,
+                                is_expired=False
+                            )
+                            
+                            # Check expiry
+                            if invite.expiry_date >= timezone.now():
+                                # Mark invite as used and create CP-Customer relation
+                                invite.mark_as_used(user)
+                                logger.info(f"User {phone} linked to CP via invite: {invite_code}")
+                            else:
+                                logger.warning(f"Invite code expired: {invite_code}")
+                        
+                        except CPInvite.DoesNotExist:
+                            logger.warning(f"Invalid invite code: {invite_code}")
+                    
+                    # Priority 2: Handle CP Referral Code (if no invite used)
+                    elif referral_code:
+                        cp = ReferralService.get_cp_from_referral_code(referral_code)
+                        
+                        if cp:
+                            # Create CP-Customer relationship
+                            CPCustomerRelation.objects.create(
+                                cp=cp,
+                                customer=user,
+                                referral_code=referral_code,
+                                is_active=True,
+                            )
+                            logger.info(f"User {phone} linked to CP: {cp.cp_code}")
+                        else:
+                            logger.warning(f"Invalid referral code: {referral_code}")
+                    
+                    # Priority 3: Check if user exists in any CP Lead
+                    # If customer matches a lead's phone, convert lead
+                    try:
+                        lead = CPLead.objects.filter(
+                            phone=phone,
+                            lead_status__in=['new', 'contacted', 'interested', 'site_visit_scheduled', 'site_visit_done', 'negotiation']
+                        ).first()
+                        
+                        if lead:
+                            # Convert lead to customer
+                            lead.convert_to_customer(user)
+                            logger.info(f"Converted lead to customer: {phone} for CP: {lead.cp.cp_code}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error converting lead: {e}")
+                
+                except Exception as e:
+                    # Don't fail user creation if CP linking fails
+                    logger.error(f"Error handling CP referral for {phone}: {e}")
 
         return user, created
 

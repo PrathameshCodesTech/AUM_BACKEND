@@ -312,3 +312,10 @@ import os
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+
+
+FRONTEND_BASE_URL = env('FRONTEND_BASE_URL', default='http://localhost:3000')
+# ========================================
+CP_CUSTOMER_RELATION_VALIDITY_DAYS = env.int('CP_RELATION_VALIDITY_DAYS', default=90)
+CP_INVITE_VALIDITY_DAYS = env.int('CP_INVITE_VALIDITY_DAYS', default=30)

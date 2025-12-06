@@ -31,8 +31,13 @@ class Commission(TimestampedModel):
 
     # Parties
     # Parties
-    cp = models.ForeignKey('partners.ChannelPartner',
-                           on_delete=models.CASCADE, related_name='commissions')
+    # Parties
+    cp = models.ForeignKey(
+        'partners.ChannelPartner',
+        on_delete=models.CASCADE,
+        related_name='commissions',
+        help_text="Channel Partner receiving commission"
+    )
 
     # Source
     investment = models.ForeignKey(
@@ -61,6 +66,30 @@ class Commission(TimestampedModel):
     # Commission rule applied
     commission_rule = models.ForeignKey(
         'partners.CommissionRule', on_delete=models.SET_NULL, null=True, blank=True)
+    # NEW FIELDS FOR CP HIERARCHY (ADD THESE)
+    # ============================================
+    is_override = models.BooleanField(
+        default=False,
+        help_text="Is this an override commission for parent CP?"
+    )
+    
+    parent_commission = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='override_commissions',
+        help_text="Base commission (if this is override)"
+    )
+    
+    paid_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='paid_commissions',
+        help_text="User who processed the payout"
+    )
 
     # Status
     status = models.CharField(

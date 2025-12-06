@@ -187,6 +187,7 @@ class AdminInvestmentActionView(APIView):
         reason = serializer.validated_data.get('rejection_reason', '')
         
         # Perform action
+        # Perform action
         if action == 'approve':
             if investment.status != 'pending':
                 return Response({
@@ -208,6 +209,20 @@ class AdminInvestmentActionView(APIView):
             # Reduce available units in property
             investment.property.available_units -= investment.units_purchased
             investment.property.save()
+            
+            # ============================================
+            # CALCULATE CP COMMISSION (NEW)
+            # ============================================
+            try:
+                from commissions.services.commission_service import CommissionService
+                commission = CommissionService.calculate_commission(investment)
+                if commission:
+                    logger.info(f"✅ Commission calculated for investment {investment.investment_id}: ₹{commission.commission_amount}")
+                else:
+                    logger.info(f"ℹ️ No commission calculated for investment {investment.investment_id} (no CP linked)")
+            except Exception as e:
+                logger.error(f"❌ Error calculating commission: {e}")
+                # Don't fail approval if commission calculation fails
             
             message = f'Investment approved successfully'
             
@@ -254,11 +269,34 @@ class AdminInvestmentActionView(APIView):
         
         logger.info(f"✅ Admin {request.user.username} performed '{action}' on investment {investment.investment_id}")
         
-        return Response({
+        # Get commission info if action was approve
+        commission_info = None
+        if action == 'approve':
+            try:
+                from commissions.models import Commission
+                commission = Commission.objects.filter(investment=investment).first()
+                if commission:
+                    commission_info = {
+                        'id': commission.id,
+                        'cp_name': commission.cp.user.get_full_name() if commission.cp else None,
+                        'cp_code': commission.cp.cp_code if commission.cp else None,
+                        'amount': str(commission.commission_amount),
+                        'rate': str(commission.commission_rate),
+                        'status': commission.status
+                    }
+            except Exception as e:
+                logger.warning(f"Could not fetch commission info: {e}")
+        
+        response_data = {
             'success': True,
             'message': message,
             'data': AdminInvestmentDetailSerializer(investment).data
-        }, status=status.HTTP_200_OK)
+        }
+        
+        if commission_info:
+            response_data['commission'] = commission_info
+        
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class AdminInvestmentsByPropertyView(APIView):

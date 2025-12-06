@@ -143,12 +143,24 @@ class InvestmentSerializer(serializers.ModelSerializer):
     # Display fields
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     
-    # CP details (optional)
+# CP details (optional)
     cp_name = serializers.CharField(
         source='referred_by_cp.user.get_full_name',
         read_only=True,
         allow_null=True
     )
+    cp_code = serializers.CharField(
+        source='referred_by_cp.cp_code',
+        read_only=True,
+        allow_null=True
+    )
+    referral_code = serializers.CharField(
+        source='referral_code_used',
+        read_only=True,
+        allow_blank=True
+    )
+    
+    # ALIASES - These point to real model fields via 'source'
     
     # ALIASES - These point to real model fields via 'source'
     units_count = serializers.IntegerField(source='units_purchased', read_only=True)
@@ -176,6 +188,8 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'property',  # SerializerMethodField
             'referred_by_cp',
             'cp_name',
+            'cp_code',  # NEW
+            'referral_code',  # NEW - shows code entered at investment
             'amount',
             'units_purchased',  # Real field
             'units_count',      # Alias → units_purchased
@@ -249,6 +263,12 @@ class CreateInvestmentSerializer(serializers.Serializer):
     property_id = serializers.IntegerField(required=True)
     amount = serializers.DecimalField(max_digits=15, decimal_places=2, required=True)
     units_count = serializers.IntegerField(required=True, min_value=1)
+    referral_code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=50,
+        help_text="Optional CP referral code (overrides pre-linked CP)"
+    )
     
     def validate_amount(self, value):
         if value <= 0:

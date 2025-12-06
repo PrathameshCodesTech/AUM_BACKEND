@@ -15,12 +15,19 @@ class InvestmentService:
 
     @staticmethod
     @transaction.atomic
-    def create_investment(user, property_obj, amount, units_count):
-        """Create new investment"""
-
+    def create_investment(user, property_obj, amount, units_count, referral_code=None):
+        """
+        Create investment for user
+        
+        Args:
+            user: Customer user object
+            property_obj: Property instance
+            amount: Investment amount
+            units_count: Number of units
+            referral_code: Optional CP referral code (overrides pre-linked CP)
+        """
         amount = Decimal(str(amount))
-        logger.info(f"📊 Creating investment: amount={amount}, units={units_count}")
-
+        logger.info(f"📊 Creating investment: amount={amount}, units={units_count}, referral_code={referral_code}")
         # 1. Check KYC
         logger.info(f"🔍 Checking KYC for user: {user.username}")
         logger.info(f"   hasattr(user, 'kyc'): {hasattr(user, 'kyc')}")
@@ -119,13 +126,60 @@ class InvestmentService:
         logger.info(f"   IRR: {irr}%")
         logger.info(f"   Expected return: ₹{expected_return_amount}")
 
-        # 7. Create investment
+        # 7. Determine CP for commission (if any)
+        logger.info(f"🤝 Determining CP for commission...")
+        referred_by_cp = None
+        referral_code_to_save = referral_code or ''
+        
+        if referral_code:
+            # Customer entered referral code at investment time
+            logger.info(f"   Validating referral code: {referral_code}")
+            try:
+                from partners.models import ChannelPartner
+                cp = ChannelPartner.objects.get(
+                    cp_code=referral_code,
+                    is_active=True,
+                    is_verified=True
+                )
+                referred_by_cp = cp
+                logger.info(f"✅ Valid referral code, CP: {cp.cp_code} ({cp.user.get_full_name()})")
+            except ChannelPartner.DoesNotExist:
+                logger.warning(f"⚠️ Invalid referral code: {referral_code}")
+                referral_code_to_save = ''  # Clear invalid code
+        
+        # Check if customer has pre-linked CP relationship
+        if not referred_by_cp:
+            logger.info(f"   Checking for pre-linked CP relationship...")
+            try:
+                from partners.models import CPCustomerRelation
+                
+                relation = CPCustomerRelation.objects.filter(
+                    customer=user,
+                    is_active=True,
+                    is_expired=False,
+                    expiry_date__gte=timezone.now()
+                ).select_related('cp').first()
+                
+                if relation:
+                    referred_by_cp = relation.cp
+                    logger.info(f"✅ Found pre-linked CP: {referred_by_cp.cp_code} ({referred_by_cp.user.get_full_name()})")
+                else:
+                    logger.info(f"ℹ️ No pre-linked CP found")
+            except Exception as e:
+                logger.error(f"❌ Error checking CP relationship: {e}")
+        
+        if not referred_by_cp:
+            logger.info(f"ℹ️ No CP linked to this investment")
+        
+        # 8. Create investment
         logger.info(f"📝 Creating investment record...")
         try:
             investment = Investment.objects.create(
                 investment_id=InvestmentService._generate_investment_id(),
                 customer=user,
                 property=property_obj,
+                referred_by_cp=referred_by_cp,  # Pre-linked CP (can be None)
+                referral_code_used=referral_code_to_save,  # Code entered at investment time
                 amount=amount,
                 units_purchased=units_count,
                 price_per_unit_at_investment=price_per_unit,
@@ -134,6 +188,8 @@ class InvestmentService:
                 transaction=tx if tx else None,
             )
             logger.info(f"✅ Investment created: {investment.investment_id}")
+            logger.info(f"   Linked CP: {referred_by_cp.cp_code if referred_by_cp else 'None'}")
+            logger.info(f"   Referral code used: {referral_code_to_save or 'None'}")
             
         except Exception as e:
             logger.error(f"❌ Error creating investment: {str(e)}")
@@ -152,15 +208,21 @@ class InvestmentService:
             logger.error(f"❌ Error linking units: {str(e)}")
             raise ValueError(f"Failed to link units: {str(e)}")
 
-        # 9. Calculate commission
-        logger.info(f"💰 Calculating commission...")
-        try:
-            CommissionService.calculate_commission(investment)
-            logger.info(f"✅ Commission calculated")
-        except Exception as e:
-            logger.warning(f"⚠️ Commission calculation failed: {str(e)}")
-            # Don't fail the investment if commission fails
-
+       # 10. Calculate commission (only if CP linked)
+        if referred_by_cp:
+            logger.info(f"💰 Calculating commission for CP: {referred_by_cp.cp_code}...")
+            try:
+                commission = CommissionService.calculate_commission(investment)
+                if commission:
+                    logger.info(f"✅ Commission calculated: ₹{commission.commission_amount}")
+                else:
+                    logger.warning(f"⚠️ No commission calculated (no matching commission rule)")
+            except Exception as e:
+                logger.warning(f"⚠️ Commission calculation failed: {str(e)}")
+                # Don't fail the investment if commission fails
+        else:
+            logger.info(f"ℹ️ No CP linked, skipping commission calculation")
+            
         logger.info(f"🎉 Investment completed successfully: {investment.investment_id}")
         return investment
 

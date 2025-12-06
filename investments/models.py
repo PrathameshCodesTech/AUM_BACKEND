@@ -159,12 +159,21 @@ class Investment(TimestampedModel, SoftDeleteModel):
         'properties.Property', on_delete=models.CASCADE, related_name='investments')
 
     # Referred by (optional)
+    # Referred by (optional)
     referred_by_cp = models.ForeignKey(
         'partners.ChannelPartner',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='referred_investments'
+        related_name='referred_investments',
+        help_text="CP who originally brought this customer (via CPCustomerRelation)"
+    )
+
+    # Referral code entered at investment time (NEW)
+    referral_code_used = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="CP referral code entered by customer at investment time (overrides referred_by_cp)"
     )
 
     # Investment details
@@ -214,12 +223,53 @@ class Investment(TimestampedModel, SoftDeleteModel):
             models.Index(fields=['customer', 'status']),
             models.Index(fields=['property', 'status']),
             models.Index(fields=['referred_by_cp']),
+            models.Index(fields=['referral_code_used']),
             models.Index(fields=['status', 'created_at']),
         ]
         ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.investment_id} - {self.customer.username} - ₹{self.amount}"
+
+    def get_commission_cp(self):
+        """
+        Get the CP who should receive commission for this investment
+        Priority: referral_code_used > referred_by_cp > None
+        """
+        from django.utils import timezone
+        
+        # Priority 1: Check if customer entered referral code at investment time
+        if self.referral_code_used:
+            try:
+                from partners.models import ChannelPartner
+                cp = ChannelPartner.objects.get(
+                    cp_code=self.referral_code_used,
+                    is_active=True,
+                    is_verified=True
+                )
+                return cp
+            except ChannelPartner.DoesNotExist:
+                pass  # Invalid code, fall through
+        
+        # Priority 2: Check if customer has pre-linked CP relationship
+        if self.referred_by_cp:
+            # Verify CP relationship is still valid (not expired)
+            try:
+                from partners.models import CPCustomerRelation
+                relation = CPCustomerRelation.objects.get(
+                    cp=self.referred_by_cp,
+                    customer=self.customer,
+                    is_active=True,
+                    is_expired=False
+                )
+                # Check if relationship hasn't expired
+                if relation.expiry_date >= timezone.now():
+                    return self.referred_by_cp
+            except CPCustomerRelation.DoesNotExist:
+                pass
+        
+        # No valid CP found
+        return None
 
 
 class InvestmentUnit(models.Model):
