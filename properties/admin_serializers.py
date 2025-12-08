@@ -575,25 +575,44 @@ class AdminPropertyCreateUpdateSerializer(serializers.ModelSerializer):
             and available_units > total_units
         ):
             raise serializers.ValidationError(
-                {
-                    "available_units": "Available units cannot exceed total units"
-                }
+                {"available_units": "Available units cannot exceed total units"}
             )
 
         # Check minimum investment doesn't exceed maximum
         min_investment = attrs.get("minimum_investment")
         max_investment = attrs.get("maximum_investment")
 
-        if (
-            min_investment
-            and max_investment
-            and min_investment > max_investment
-        ):
+        if min_investment and max_investment and min_investment > max_investment:
             raise serializers.ValidationError(
-                {
-                    "maximum_investment": "Maximum investment cannot be less than minimum investment"
-                }
+                {"maximum_investment": "Maximum investment cannot be less than minimum investment"}
             )
+
+        # ✅ ADD THIS: Validate minimum investment is valid multiple of price_per_unit
+        price_per_unit = attrs.get("price_per_unit")
+        if min_investment and price_per_unit:
+            # Calculate minimum shares required
+            min_shares = min_investment / price_per_unit
+            
+            # Check if it's a whole number (within 0.01 tolerance for rounding)
+            if abs(min_shares - round(min_shares)) > 0.01:
+                raise serializers.ValidationError({
+                    "minimum_investment": (
+                        f"Minimum investment must be a multiple of price per share (₹{price_per_unit}). "
+                        f"₹{min_investment} equals {min_shares:.2f} shares. "
+                        f"Suggested: ₹{int(min_shares) * price_per_unit} ({int(min_shares)} shares) "
+                        f"or ₹{(int(min_shares) + 1) * price_per_unit} ({int(min_shares) + 1} shares)"
+                    )
+                })
+        
+        # ✅ OPTIONAL: Also validate maximum_investment
+        if max_investment and price_per_unit:
+            max_shares = max_investment / price_per_unit
+            if abs(max_shares - round(max_shares)) > 0.01:
+                raise serializers.ValidationError({
+                    "maximum_investment": (
+                        f"Maximum investment must be a multiple of price per share (₹{price_per_unit})"
+                    )
+                })
 
         # Check funding dates
         funding_start = attrs.get("funding_start_date")

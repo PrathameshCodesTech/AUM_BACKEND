@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/admin/kyc/', include('compliance.admin_urls')),
     path('api/admin/properties/', include('properties.admin_urls')),
     path('api/admin/investments/', include('investments.admin_urls')),
+     path('api/', include('commissions.urls')),
 ]
 
 if settings.DEBUG:

@@ -213,19 +213,33 @@ class AdminInvestmentActionView(APIView):
             # ============================================
             # CALCULATE CP COMMISSION (NEW)
             # ============================================
+            # ============================================
+            # AUTO-APPROVE CP COMMISSION (FIXED)
+            # ============================================
             try:
                 from commissions.services.commission_service import CommissionService
-                commission = CommissionService.calculate_commission(investment)
+                from commissions.models import Commission
+                
+                # Find existing commission (created during investment)
+                commission = Commission.objects.filter(
+                    investment=investment,
+                    status='pending',
+                    is_override=False
+                ).first()
+                
                 if commission:
-                    logger.info(f"✅ Commission calculated for investment {investment.investment_id}: ₹{commission.commission_amount}")
+                    # Approve the existing commission
+                    CommissionService.approve_commission(commission, request.user)
+                    logger.info(f"✅ Commission {commission.commission_id} auto-approved: ₹{commission.commission_amount}")
                 else:
-                    logger.info(f"ℹ️ No commission calculated for investment {investment.investment_id} (no CP linked)")
+                    logger.info(f"ℹ️ No pending commission found for investment {investment.investment_id}")
+                    
             except Exception as e:
-                logger.error(f"❌ Error calculating commission: {e}")
-                # Don't fail approval if commission calculation fails
+                logger.error(f"❌ Error approving commission: {e}")
+                # Don't fail approval if commission approval fails
             
             message = f'Investment approved successfully'
-            
+        #!    
         elif action == 'reject':
             if investment.status != 'pending':
                 return Response({
@@ -236,6 +250,25 @@ class AdminInvestmentActionView(APIView):
             investment.status = 'rejected'
             investment.rejection_reason = reason
             investment.approved_by = request.user
+            
+            # ============================================
+            # CANCEL COMMISSION
+            # ============================================
+            try:
+                from commissions.models import Commission
+                
+                commission = Commission.objects.filter(
+                    investment=investment,
+                    status='pending'
+                ).first()
+                
+                if commission:
+                    commission.status = 'cancelled'
+                    commission.save(update_fields=['status'])
+                    logger.info(f"✅ Commission {commission.commission_id} cancelled")
+            except Exception as e:
+                logger.error(f"❌ Error cancelling commission: {e}")
+            
             message = f'Investment rejected'
             
         elif action == 'complete':
@@ -248,7 +281,7 @@ class AdminInvestmentActionView(APIView):
             investment.payment_completed = True
             investment.payment_completed_at = timezone.now()
             message = f'Investment marked as completed'
-            
+        #!    
         elif action == 'cancel':
             if investment.status in ['cancelled', 'completed']:
                 return Response({
@@ -263,6 +296,25 @@ class AdminInvestmentActionView(APIView):
             
             investment.status = 'cancelled'
             investment.rejection_reason = reason
+            
+            # ============================================
+            # CANCEL COMMISSION
+            # ============================================
+            try:
+                from commissions.models import Commission
+                
+                commission = Commission.objects.filter(
+                    investment=investment,
+                    status__in=['pending', 'approved']  # Can cancel approved too
+                ).first()
+                
+                if commission:
+                    commission.status = 'cancelled'
+                    commission.save(update_fields=['status'])
+                    logger.info(f"✅ Commission {commission.commission_id} cancelled")
+            except Exception as e:
+                logger.error(f"❌ Error cancelling commission: {e}")
+            
             message = f'Investment cancelled'
         
         investment.save()

@@ -68,28 +68,38 @@ class InvestmentService:
         except Wallet.DoesNotExist:
             logger.error(f"❌ Wallet not found for user!")
             raise ValueError("Wallet not found. Please create a wallet first.")
+# Replace lines 68-108 in investment_service.py
 
-        # 3. Select available units
-        logger.info(f"🏢 Selecting {units_count} available units...")
+        # 3. Check and update available units on Property model
+        logger.info(f"🏢 Checking property availability for {units_count} shares...")
         try:
-            units_qs = (
-                PropertyUnit.objects.select_for_update()
-                .filter(property=property_obj, status="available")
-                .order_by("unit_number")
-            )
-            units = list(units_qs[:units_count])
+            from properties.models import Property
             
-            logger.info(f"   Found {len(units)} available units")
+            # Lock the property row for update
+            property_obj = Property.objects.select_for_update().get(id=property_obj.id)
             
-            if len(units) < units_count:
-                logger.error(f"❌ Not enough units available!")
-                raise ValueError(f"Only {len(units)} units available, but {units_count} requested")
+            if units_count > property_obj.available_units:
+                logger.error(f"❌ Not enough shares available!")
+                raise ValueError(
+                    f"Only {property_obj.available_units} shares available, but {units_count} requested"
+                )
             
-            logger.info(f"✅ Units selected successfully")
+            logger.info(f"✅ Shares available: {property_obj.available_units}")
             
+            # Deduct shares from available_units
+            property_obj.available_units -= units_count
+            property_obj.save(update_fields=['available_units'])
+            
+            logger.info(f"✅ Updated available_units: {property_obj.available_units + units_count} → {property_obj.available_units}")
+            
+        except Property.DoesNotExist:
+            logger.error(f"❌ Property not found!")
+            raise ValueError("Property not found")
         except Exception as e:
-            logger.error(f"❌ Error selecting units: {str(e)}")
-            raise ValueError(f"Error selecting units: {str(e)}")
+            logger.error(f"❌ Error checking property availability: {str(e)}")
+            raise ValueError(f"Error checking property availability: {str(e)}")
+
+        # 4. Deduct from wallet (rest of code continues...)
 
         # 4. Deduct from wallet
         logger.info(f"💸 Deducting ₹{amount} from wallet...")
@@ -137,9 +147,13 @@ class InvestmentService:
             logger.info(f"   Validating referral code: {referral_code}")
             try:
                 from partners.models import ChannelPartner, CPCustomerRelation
+                normalized_code = referral_code.upper().strip()
+                if normalized_code and not normalized_code.startswith('CP'):
+                    normalized_code = f'CP{normalized_code}'
+                    logger.info(f"   Normalized code: {referral_code} → {normalized_code}")
                 
                 cp = ChannelPartner.objects.get(
-                    cp_code=referral_code,
+                    cp_code=normalized_code,
                     is_active=True,
                     is_verified=True
                 )
@@ -172,11 +186,13 @@ class InvestmentService:
                         CPCustomerRelation.objects.create(
                             cp=cp,
                             customer=user,
-                            referral_code=referral_code,
+                            referral_code=normalized_code,
                             is_active=True,
                         )
                         referred_by_cp = cp
+                        referral_code_to_save = normalized_code
                         cp_relation_created = True
+                        
                         logger.info(f"✅ Created new CPCustomerRelation for CP {cp.cp_code}")
                     except Exception as e:
                         logger.error(f"❌ Failed to create CPCustomerRelation: {e}")
@@ -220,7 +236,7 @@ class InvestmentService:
                 customer=user,
                 property=property_obj,
                 referred_by_cp=referred_by_cp,  # Pre-linked CP (can be None)
-                referral_code_used=referral_code_to_save,  # Code entered at investment time
+                referral_code_used=referral_code_to_save,  # ✅ CORRECT
                 amount=amount,
                 units_purchased=units_count,
                 price_per_unit_at_investment=price_per_unit,
@@ -236,18 +252,18 @@ class InvestmentService:
             logger.error(f"❌ Error creating investment: {str(e)}")
             raise ValueError(f"Failed to create investment: {str(e)}")
 
-        # 8. Link units
-        logger.info(f"🔗 Linking units to investment...")
-        try:
-            for unit in units:
-                InvestmentUnit.objects.create(investment=investment, unit=unit)
-                unit.status = "booked"
-                unit.save(update_fields=["status"])
-            logger.info(f"✅ Linked {len(units)} units")
+        # # 8. Link units
+        # logger.info(f"🔗 Linking units to investment...")
+        # try:
+        #     for unit in units:
+        #         InvestmentUnit.objects.create(investment=investment, unit=unit)
+        #         unit.status = "booked"
+        #         unit.save(update_fields=["status"])
+        #     logger.info(f"✅ Linked {len(units)} units")
             
-        except Exception as e:
-            logger.error(f"❌ Error linking units: {str(e)}")
-            raise ValueError(f"Failed to link units: {str(e)}")
+        # except Exception as e:
+        #     logger.error(f"❌ Error linking units: {str(e)}")
+        #     raise ValueError(f"Failed to link units: {str(e)}")
 
        # 10. Calculate commission (only if CP linked)
         if referred_by_cp:

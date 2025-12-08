@@ -96,16 +96,23 @@ class AdminInvestmentDetailSerializer(serializers.ModelSerializer):
         }
     
     def get_commission_details(self, obj):
-        """Get commission information"""
-        from commissions.models import Commission
-        commissions = Commission.objects.filter(investment=obj)
-        return [{
-            'id': comm.id,
-            'channel_partner': comm.channel_partner.username if comm.channel_partner else None,
-            'amount': str(comm.amount),
+        comm = obj.commission
+        if not comm:
+            return None
+        
+        return {
+            'commission_id': comm.commission_id,
+            'channel_partner': comm.cp.user.username if comm.cp else None,  # ← FIXED
+            'cp_code': comm.cp.cp_code if comm.cp else None,  # ← BONUS: Add CP code
+            'base_amount': float(comm.base_amount),
+            'commission_rate': float(comm.commission_rate),
+            'commission_amount': float(comm.commission_amount),
+            'tds_amount': float(comm.tds_amount),
+            'net_amount': float(comm.net_amount),
             'status': comm.status,
-            'created_at': comm.created_at,
-        } for comm in commissions]
+            'approved_at': comm.approved_at,
+            'paid_at': comm.paid_at,
+        }
 
 
 class AdminInvestmentActionSerializer(serializers.Serializer):
