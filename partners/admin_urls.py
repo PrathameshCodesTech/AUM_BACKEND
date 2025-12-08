@@ -30,9 +30,16 @@ from .admin_views import (
     AdminCPCustomerRelationsView,
     AdminCPCustomerRelationExtendView,
     AdminCPCustomerRelationDeleteView,
+    AdminCPAuthorizedPropertiesView,  # 👈 ADD THIS
+    AdminCreateCPView
 )
 
 urlpatterns = [
+
+    
+    # CP CREATION (NEW)
+    # ============================================
+    path('create/', AdminCreateCPView.as_view(), name='admin-cp-create'),  # 👈 ADD THIS
     # ============================================
     # CP APPLICATIONS
     # ============================================
@@ -54,6 +61,7 @@ urlpatterns = [
     # ============================================
     # PROPERTY AUTHORIZATION
     # ============================================
+    path('<int:cp_id>/properties/', AdminCPAuthorizedPropertiesView.as_view(), name='admin-cp-authorized-properties'),  # 👈 ADD THIS
     path('<int:cp_id>/authorize-properties/', AdminCPAuthorizePropertiesView.as_view(), name='admin-cp-authorize-properties'),
     path('<int:cp_id>/properties/<int:property_id>/', AdminCPRevokePropertyView.as_view(), name='admin-cp-revoke-property'),
     

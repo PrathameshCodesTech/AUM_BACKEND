@@ -45,9 +45,9 @@ class CPService:
         if hasattr(user, 'cp_profile'):
             raise ValueError("User already has a CP profile")
         
-        # Check if user has verified KYC
-        if not user.kyc_verified:
-            raise ValueError("KYC verification required before applying")
+        #! # Check if user has verified KYC
+        # if not user.kyc_verified:
+        #     raise ValueError("KYC verification required before applying")
         
         # Generate CP code
         cp_code = CPService.generate_cp_code()
@@ -98,15 +98,24 @@ class CPService:
         cp.save()
         
         # Change user role to channel_partner
+       # Change user role to channel_partner
         try:
             cp_role = Role.objects.get(slug='channel_partner')
             cp.user.role = cp_role
-            cp.user.save()
-            
-            # Clear permission cache
-            PermissionService.clear_user_permission_cache(cp.user)
         except Role.DoesNotExist:
-            pass  # Role not found, skip role assignment
+            pass
+
+        # 👇 ADD THESE LINES (set CP flags on User model)
+        cp.user.is_cp = True
+        cp.user.cp_status = 'approved'
+        cp.user.is_active_cp = True
+        cp.user.save()  # 👈 Save with all fields
+
+        # Clear permission cache
+        try:
+            PermissionService.clear_user_permission_cache(cp.user)
+        except:
+            pass
         
         return cp
     
@@ -189,7 +198,7 @@ class CPService:
         ).aggregate(total=Sum('commission_amount'))['total'] or Decimal('0.00')
         
         month_commissions = all_commissions.filter(
-            calculated_at__gte=month_start
+            created_at__gte=month_start
         ).aggregate(total=Sum('commission_amount'))['total'] or Decimal('0.00')
         
         # Lead stats

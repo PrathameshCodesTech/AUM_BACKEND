@@ -13,7 +13,7 @@ from .models import (
 )
 from accounts.models import User
 from properties.models import Property
-
+from decimal import Decimal
 
 # ============================================
 # CHANNEL PARTNER SERIALIZERS
@@ -195,14 +195,15 @@ class CPProfileSerializer(serializers.ModelSerializer):
     def get_program_is_active(self, obj):
         """Check if program is active"""
         return obj.is_program_active()
-
-
+    
 class CPListSerializer(serializers.ModelSerializer):
     """Lightweight CP list serializer"""
     
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
     total_customers = serializers.SerializerMethodField()
+    total_invested = serializers.SerializerMethodField()
+    total_commission = serializers.SerializerMethodField()
     
     class Meta:
         model = ChannelPartner
@@ -212,18 +213,41 @@ class CPListSerializer(serializers.ModelSerializer):
             'user_name',
             'user_email',
             'agent_type',
+            'company_name',
             'partner_tier',
             'onboarding_status',
             'is_verified',
             'is_active',
             'total_customers',
+            'total_invested',
+            'total_commission',
             'created_at',
         ]
     
     def get_total_customers(self, obj):
-        return obj.customers.filter(is_active=True).count()
-
-
+        return obj.customers.filter(is_active=True, is_expired=False).count()
+    
+    def get_total_invested(self, obj):
+        from investments.models import Investment
+        from django.db.models import Sum
+        
+        total = Investment.objects.filter(
+            referred_by_cp=obj,
+            status__in=['approved', 'active', 'completed']
+        ).aggregate(total=Sum('amount'))['total']
+        
+        return str(total or Decimal('0.00'))
+    
+    def get_total_commission(self, obj):
+        from commissions.models import Commission
+        from django.db.models import Sum
+        
+        total = Commission.objects.filter(
+            cp=obj,
+            status__in=['approved', 'paid']
+        ).aggregate(total=Sum('commission_amount'))['total']
+        
+        return str(total or Decimal('0.00'))
 # ============================================
 # CP CUSTOMER RELATION SERIALIZERS
 # ============================================
@@ -324,8 +348,8 @@ class CPPropertyAuthorizationSerializer(serializers.ModelSerializer):
         return {
             'id': obj.property.id,
             'name': obj.property.name,
-            'property_code': obj.property.property_code,
-            'location': obj.property.location,
+            'slug': obj.property.slug,  # 👈 CHANGED from property_code to slug
+            'location': f"{obj.property.city}, {obj.property.state}",  # 👈 FIXED
             'price_per_unit': str(obj.property.price_per_unit),
             'total_units': obj.property.total_units,
             'available_units': obj.property.available_units,
@@ -598,7 +622,6 @@ class CommissionRuleSerializer(serializers.ModelSerializer):
             'effective_to',
         ]
 
-
 class CPCommissionRuleSerializer(serializers.ModelSerializer):
     """CP commission rule assignment serializer"""
     
@@ -637,7 +660,7 @@ class CPCommissionRuleSerializer(serializers.ModelSerializer):
             return {
                 'id': obj.property.id,
                 'name': obj.property.name,
-                'property_code': obj.property.property_code,
+                'slug': obj.property.slug,  # 👈 CHANGED from property_code to slug
             }
         return None
 
@@ -694,5 +717,186 @@ class CPApprovalSerializer(serializers.Serializer):
 
 class CPRejectionSerializer(serializers.Serializer):
     """Serializer for CP rejection"""
-    
     rejection_reason = serializers.CharField(required=True)
+
+
+# ============================================
+# ADMIN CP CREATION SERIALIZER (NEW)
+# ============================================
+
+class AdminCreateCPSerializer(serializers.ModelSerializer):
+    """
+    Admin manually creates CP on behalf
+    Uses ChannelPartner model + creates user account
+    """
+    
+    # ============================================
+    # NESTED USER FIELDS (Write-Only)
+    # ============================================
+    first_name = serializers.CharField(max_length=150, write_only=True, required=True)
+    last_name = serializers.CharField(max_length=150, write_only=True, required=True)
+    email = serializers.EmailField(write_only=True, required=True)
+    phone = serializers.CharField(max_length=15, write_only=True, required=True)
+    password = serializers.CharField(
+        write_only=True, 
+        required=False, 
+        allow_blank=True,
+        help_text="Auto-generated if not provided"
+    )
+    
+    # ============================================
+    # PROPERTY AUTHORIZATION (Optional)
+    # ============================================
+    property_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+        help_text="List of property IDs to authorize"
+    )
+    
+    # ============================================
+    # AUTO-APPROVE FLAG
+    # ============================================
+    auto_approve = serializers.BooleanField(
+        write_only=True,
+        default=True,
+        help_text="Auto-approve and activate CP"
+    )
+    
+    class Meta:
+        model = ChannelPartner
+        fields = [
+            # User fields (write-only)
+            'first_name', 'last_name', 'email', 'phone', 'password',
+            
+            # CP Identity
+            'agent_type', 'source', 'company_name',
+            'pan_number', 'gst_number', 'rera_number',
+            'business_address',
+            
+            # Program Enrolment
+            'partner_tier', 'program_start_date', 'program_end_date',
+            
+            # Compliance
+            'regulatory_compliance_approved',
+            
+            # Operational Setup
+            'dedicated_support_contact', 'technical_setup_notes',
+            
+            # Targets & Performance
+            'monthly_target', 'quarterly_target', 'yearly_target',
+            
+            # Bank Details
+            'bank_name', 'account_number', 'ifsc_code', 'account_holder_name',
+            
+            # Commission
+            'commission_notes',
+            
+            # Property Authorization
+            'property_ids',
+            
+            # Auto-approve
+            'auto_approve',
+            
+            # Read-only (auto-generated)
+            'id', 'cp_code', 'user', 'onboarding_status', 
+            'is_verified', 'is_active', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'cp_code', 'user', 'onboarding_status', 
+            'is_verified', 'is_active', 'created_at'
+        ]
+    
+    def validate_phone(self, value):
+        """Validate and normalize phone number"""
+        import re
+        
+        # Remove any spaces, dashes, or other non-digit characters except +
+        phone = re.sub(r'[^\d+]', '', value.strip())
+        
+        # Remove + temporarily for digit counting
+        digits_only = phone.replace('+', '')
+        
+        # Handle different formats
+        if len(digits_only) == 10:
+            phone = f'+91{digits_only}'
+        elif len(digits_only) == 12 and digits_only.startswith('91'):
+            phone = f'+{digits_only}'
+        elif len(digits_only) == 11 and digits_only.startswith('0'):
+            phone = f'+91{digits_only[1:]}'
+        elif not phone.startswith('+91'):
+            phone = f'+91{phone}'
+        
+        # Final validation
+        if not re.match(r'^\+91\d{10}$', phone):
+            raise serializers.ValidationError(
+                "Phone must be in format +91XXXXXXXXXX (10 digits)"
+            )
+        
+        # Check if phone already exists
+        if User.objects.filter(phone=phone).exists():
+            raise serializers.ValidationError(
+                "Phone number already registered"
+            )
+        
+        return phone
+    
+    def validate_email(self, value):
+        """Check if email already exists"""
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value
+    
+    def validate_pan_number(self, value):
+        """Validate PAN format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 10:
+                raise serializers.ValidationError("PAN must be 10 characters")
+            # Basic PAN format: ABCDE1234F
+            import re
+            if not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', value):
+                raise serializers.ValidationError("Invalid PAN format")
+        return value
+    
+    def validate_gst_number(self, value):
+        """Validate GST format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 15:
+                raise serializers.ValidationError("GST must be 15 characters")
+        return value
+    
+    def validate_ifsc_code(self, value):
+        """Validate IFSC format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 11:
+                raise serializers.ValidationError("IFSC must be 11 characters")
+            # Basic IFSC format: ABCD0123456
+            import re
+            if not re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', value):
+                raise serializers.ValidationError("Invalid IFSC format")
+        return value
+    
+    def validate(self, data):
+        """Cross-field validation"""
+        # If company type, require company name and GST
+        if data.get('agent_type') == 'company':
+            if not data.get('company_name'):
+                raise serializers.ValidationError({
+                    'company_name': 'Company name required for company type'
+                })
+        
+        # If bank details provided, all fields required
+        bank_fields = ['bank_name', 'account_number', 'ifsc_code', 'account_holder_name']
+        bank_values = [data.get(field) for field in bank_fields]
+        
+        if any(bank_values):  # If any bank field is filled
+            if not all(bank_values):  # All must be filled
+                raise serializers.ValidationError({
+                    'bank_details': 'All bank details required if providing bank information'
+                })
+        
+        return data

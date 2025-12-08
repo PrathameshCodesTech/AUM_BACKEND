@@ -130,24 +130,64 @@ class InvestmentService:
         logger.info(f"🤝 Determining CP for commission...")
         referred_by_cp = None
         referral_code_to_save = referral_code or ''
-        
+        cp_relation_created = False
+
         if referral_code:
             # Customer entered referral code at investment time
             logger.info(f"   Validating referral code: {referral_code}")
             try:
-                from partners.models import ChannelPartner
+                from partners.models import ChannelPartner, CPCustomerRelation
+                
                 cp = ChannelPartner.objects.get(
                     cp_code=referral_code,
                     is_active=True,
                     is_verified=True
                 )
-                referred_by_cp = cp
+                
                 logger.info(f"✅ Valid referral code, CP: {cp.cp_code} ({cp.user.get_full_name()})")
+                
+                # Check if customer already has a CP relationship
+                existing_relation = CPCustomerRelation.objects.filter(
+                    customer=user,
+                    is_active=True,
+                    is_expired=False
+                ).first()
+                
+                if existing_relation:
+                    if existing_relation.cp.id != cp.id:
+                        # Customer already linked to different CP
+                        logger.warning(
+                            f"⚠️ Customer already linked to CP {existing_relation.cp.cp_code}. "
+                            f"Using existing CP, ignoring code {referral_code}"
+                        )
+                        referred_by_cp = existing_relation.cp
+                        referral_code_to_save = existing_relation.referral_code  # Keep original code
+                    else:
+                        # Same CP, all good
+                        referred_by_cp = cp
+                        logger.info(f"✅ Customer already linked to this CP")
+                else:
+                    # No existing relationship - CREATE NEW CPCustomerRelation
+                    try:
+                        CPCustomerRelation.objects.create(
+                            cp=cp,
+                            customer=user,
+                            referral_code=referral_code,
+                            is_active=True,
+                        )
+                        referred_by_cp = cp
+                        cp_relation_created = True
+                        logger.info(f"✅ Created new CPCustomerRelation for CP {cp.cp_code}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to create CPCustomerRelation: {e}")
+                        # Still link investment to CP even if relation creation fails
+                        referred_by_cp = cp
+                
             except ChannelPartner.DoesNotExist:
                 logger.warning(f"⚠️ Invalid referral code: {referral_code}")
                 referral_code_to_save = ''  # Clear invalid code
-        
-        # Check if customer has pre-linked CP relationship
+
+        # Check if customer has pre-linked CP relationship (if no code entered)
         if not referred_by_cp:
             logger.info(f"   Checking for pre-linked CP relationship...")
             try:
@@ -162,12 +202,13 @@ class InvestmentService:
                 
                 if relation:
                     referred_by_cp = relation.cp
+                    referral_code_to_save = relation.referral_code  # Use code from relation
                     logger.info(f"✅ Found pre-linked CP: {referred_by_cp.cp_code} ({referred_by_cp.user.get_full_name()})")
                 else:
                     logger.info(f"ℹ️ No pre-linked CP found")
             except Exception as e:
                 logger.error(f"❌ Error checking CP relationship: {e}")
-        
+
         if not referred_by_cp:
             logger.info(f"ℹ️ No CP linked to this investment")
         

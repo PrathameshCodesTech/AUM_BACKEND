@@ -22,11 +22,11 @@ def send_otp(request):
     serializer = SendOTPSerializer(data=request.data)
 
     if serializer.is_valid():
-        result = serializer.send_otp()
+        # 👇 PASS REQUEST OBJECT FOR IP TRACKING
+        result = serializer.send_otp(request=request)
         return Response(result, status=status.HTTP_200_OK)
 
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 @api_view(['POST'])

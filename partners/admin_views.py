@@ -5,6 +5,9 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
+from django.db import transaction
+from django.utils import timezone
+from accounts.models import User, Role
 
 from accounts.permissions import IsAdmin
 from .models import (
@@ -28,6 +31,7 @@ from .serializers import (
     CommissionRuleSerializer,
     CPCommissionRuleSerializer,
     AssignCommissionRuleSerializer,
+    AdminCreateCPSerializer
 )
 from .services.cp_service import CPService
 from properties.models import Property
@@ -519,3 +523,189 @@ class AdminCPCustomerRelationDeleteView(APIView):
         return Response({
             'message': 'Relationship deactivated'
         })
+
+
+class AdminCPAuthorizedPropertiesView(APIView):
+    """
+    GET /api/admin/cp/{id}/properties/
+    List authorized properties for a CP
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    def get(self, request, cp_id):
+        cp = get_object_or_404(ChannelPartner, id=cp_id)
+        
+        authorizations = CPPropertyAuthorization.objects.filter(
+            cp=cp,
+            is_authorized=True
+        ).select_related('property').order_by('-authorized_at')
+        
+        serializer = CPPropertyAuthorizationSerializer(authorizations, many=True)
+        
+        return Response({
+            'success': True,
+            'results': serializer.data,
+            'count': authorizations.count()
+        })
+    
+
+class AdminCreateCPView(APIView):
+    """
+    POST /api/admin/cp/create/
+    Admin manually creates a CP with complete details
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    @transaction.atomic
+    def post(self, request):
+        serializer = AdminCreateCPSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response({...}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Extract data
+            data = serializer.validated_data
+            
+            # ============================================
+            # 0. EXTRACT auto_approve FIRST (MOVE HERE!)
+            # ============================================
+            auto_approve = data.pop('auto_approve', True)  # 👈 EXTRACT IT FIRST
+            property_ids = data.pop('property_ids', [])    # 👈 EXTRACT THESE TOO
+            
+            # ============================================
+            # 1. CREATE USER ACCOUNT
+            # ============================================
+            import random
+            import string
+            
+            # Generate password
+            password = data.pop('password', None)
+            if not password:
+                password = ''.join(random.choices(
+                    string.ascii_letters + string.digits + string.punctuation, 
+                    k=12
+                ))
+            
+            # Extract user fields
+            first_name = data.pop('first_name')
+            last_name = data.pop('last_name')
+            email = data.pop('email')
+            phone = data.pop('phone')
+            
+            # Create user
+            user = User.objects.create(
+                username=phone,
+                phone=phone,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                is_active=True,
+                phone_verified=True,
+            )
+            user.set_password(password)
+            
+            # Assign role
+            try:
+                cp_role = Role.objects.get(slug='channel_partner')
+                user.role = cp_role
+            except Role.DoesNotExist:
+                pass
+            
+            # 👇 NOW auto_approve IS AVAILABLE!
+            user.is_cp = True
+            user.cp_status = 'approved' if auto_approve else 'pending'
+            user.is_active_cp = auto_approve
+            user.save()
+            
+            # ============================================
+            # 2. CREATE CHANNEL PARTNER PROFILE
+            # ============================================
+            # (auto_approve and property_ids already extracted above)
+        
+            
+            # ============================================
+            # 2. CREATE CHANNEL PARTNER PROFILE
+            # ============================================
+            
+            # Extract property_ids and auto_approve before creating CP
+            property_ids = data.pop('property_ids', [])
+            auto_approve = data.pop('auto_approve', True)
+            
+            # Generate CP code
+            from partners.services.cp_service import CPService
+            cp_code = CPService.generate_cp_code()
+            
+            # Set default program start date if auto-approve
+            if auto_approve and not data.get('program_start_date'):
+                data['program_start_date'] = timezone.now().date()
+            
+            # Create CP profile
+            cp = ChannelPartner.objects.create(
+                user=user,
+                cp_code=cp_code,
+                onboarding_status='completed' if auto_approve else 'pending',
+                is_verified=auto_approve,
+                is_active=auto_approve,
+                verified_by=request.user if auto_approve else None,
+                verified_at=timezone.now() if auto_approve else None,
+                created_by=request.user,
+                onboarded_by=request.user,
+                **data  # All remaining CP fields
+            )
+            
+            # ============================================
+            # 3. AUTHORIZE PROPERTIES (If provided)
+            # ============================================
+            authorized_properties = []
+            if property_ids:
+                from properties.models import Property
+                
+                for property_id in property_ids:
+                    try:
+                        property_obj = Property.objects.get(id=property_id)
+                        
+                        auth = CPPropertyAuthorization.objects.create(
+                            cp=cp,
+                            property=property_obj,
+                            is_authorized=True,
+                            approval_status='approved',
+                            authorized_by=request.user,
+                        )
+                        
+                        # Generate referral link
+                        auth.generate_referral_link()
+                        authorized_properties.append(auth)
+                        
+                    except Property.DoesNotExist:
+                        continue
+            
+            # ============================================
+            # 4. SEND CREDENTIALS EMAIL (TODO)
+            # ============================================
+            # TODO: Send email with login credentials
+            # send_cp_credentials_email(user, password, cp)
+            
+            # ============================================
+            # 5. RETURN RESPONSE
+            # ============================================
+            cp_serializer = CPProfileSerializer(cp)
+            
+            return Response({
+                'success': True,
+                'message': f'CP created successfully. CP Code: {cp.cp_code}',
+                'data': cp_serializer.data,
+                'credentials': {
+                    'username': phone,
+                    'password': password,  # ⚠️ ONLY for immediate display to admin
+                    'email': email
+                },
+                'authorized_properties_count': len(authorized_properties)
+            }, status=status.HTTP_201_CREATED)
+        
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'message': 'Failed to create CP'
+            }, status=status.HTTP_400_BAD_REQUEST)

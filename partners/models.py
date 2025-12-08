@@ -5,6 +5,8 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from accounts.models import User, TimestampedModel, SoftDeleteModel
 from django.utils import timezone
 from datetime import timedelta
+from rest_framework import serializers
+
 
 
 # ============================================
@@ -1048,3 +1050,185 @@ class CPCommissionRule(TimestampedModel):
         if self.property:
             return f"{self.cp.cp_code} → {self.commission_rule.name} (Property: {self.property.name})"
         return f"{self.cp.cp_code} → {self.commission_rule.name} (All Properties)"
+
+
+# ============================================
+# ADMIN CP CREATION SERIALIZER (NEW)
+# ============================================
+
+class AdminCreateCPSerializer(serializers.ModelSerializer):
+    """
+    Admin manually creates CP on behalf
+    Uses ChannelPartner model + creates user account
+    """
+    
+    # ============================================
+    # NESTED USER FIELDS (Write-Only)
+    # ============================================
+    first_name = serializers.CharField(max_length=150, write_only=True, required=True)
+    last_name = serializers.CharField(max_length=150, write_only=True, required=True)
+    email = serializers.EmailField(write_only=True, required=True)
+    phone = serializers.CharField(max_length=15, write_only=True, required=True)
+    password = serializers.CharField(
+        write_only=True, 
+        required=False, 
+        allow_blank=True,
+        help_text="Auto-generated if not provided"
+    )
+    
+    # ============================================
+    # PROPERTY AUTHORIZATION (Optional)
+    # ============================================
+    property_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+        help_text="List of property IDs to authorize"
+    )
+    
+    # ============================================
+    # AUTO-APPROVE FLAG
+    # ============================================
+    auto_approve = serializers.BooleanField(
+        write_only=True,
+        default=True,
+        help_text="Auto-approve and activate CP"
+    )
+    
+    class Meta:
+        model = ChannelPartner
+        fields = [
+            # User fields (write-only)
+            'first_name', 'last_name', 'email', 'phone', 'password',
+            
+            # CP Identity
+            'agent_type', 'source', 'company_name',
+            'pan_number', 'gst_number', 'rera_number',
+            'business_address',
+            
+            # Program Enrolment
+            'partner_tier', 'program_start_date', 'program_end_date',
+            
+            # Compliance
+            'regulatory_compliance_approved',
+            
+            # Operational Setup
+            'dedicated_support_contact', 'technical_setup_notes',
+            
+            # Targets & Performance
+            'monthly_target', 'quarterly_target', 'yearly_target',
+            
+            # Bank Details
+            'bank_name', 'account_number', 'ifsc_code', 'account_holder_name',
+            
+            # Commission
+            'commission_notes',
+            
+            # Property Authorization
+            'property_ids',
+            
+            # Auto-approve
+            'auto_approve',
+            
+            # Read-only (auto-generated)
+            'id', 'cp_code', 'user', 'onboarding_status', 
+            'is_verified', 'is_active', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'cp_code', 'user', 'onboarding_status', 
+            'is_verified', 'is_active', 'created_at'
+        ]
+    
+    def validate_phone(self, value):
+        """Validate and normalize phone number"""
+        import re
+        
+        # Remove any spaces, dashes, or other non-digit characters except +
+        phone = re.sub(r'[^\d+]', '', value.strip())
+        
+        # Remove + temporarily for digit counting
+        digits_only = phone.replace('+', '')
+        
+        # Handle different formats
+        if len(digits_only) == 10:
+            phone = f'+91{digits_only}'
+        elif len(digits_only) == 12 and digits_only.startswith('91'):
+            phone = f'+{digits_only}'
+        elif len(digits_only) == 11 and digits_only.startswith('0'):
+            phone = f'+91{digits_only[1:]}'
+        elif not phone.startswith('+91'):
+            phone = f'+91{phone}'
+        
+        # Final validation
+        if not re.match(r'^\+91\d{10}$', phone):
+            raise serializers.ValidationError(
+                "Phone must be in format +91XXXXXXXXXX (10 digits)"
+            )
+        
+        # Check if phone already exists
+        if User.objects.filter(phone=phone).exists():
+            raise serializers.ValidationError(
+                "Phone number already registered"
+            )
+        
+        return phone
+    
+    def validate_email(self, value):
+        """Check if email already exists"""
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value
+    
+    def validate_pan_number(self, value):
+        """Validate PAN format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 10:
+                raise serializers.ValidationError("PAN must be 10 characters")
+            # Basic PAN format: ABCDE1234F
+            import re
+            if not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', value):
+                raise serializers.ValidationError("Invalid PAN format")
+        return value
+    
+    def validate_gst_number(self, value):
+        """Validate GST format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 15:
+                raise serializers.ValidationError("GST must be 15 characters")
+        return value
+    
+    def validate_ifsc_code(self, value):
+        """Validate IFSC format"""
+        if value:
+            value = value.strip().upper()
+            if len(value) != 11:
+                raise serializers.ValidationError("IFSC must be 11 characters")
+            # Basic IFSC format: ABCD0123456
+            import re
+            if not re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', value):
+                raise serializers.ValidationError("Invalid IFSC format")
+        return value
+    
+    def validate(self, data):
+        """Cross-field validation"""
+        # If company type, require company name and GST
+        if data.get('agent_type') == 'company':
+            if not data.get('company_name'):
+                raise serializers.ValidationError({
+                    'company_name': 'Company name required for company type'
+                })
+        
+        # If bank details provided, all fields required
+        bank_fields = ['bank_name', 'account_number', 'ifsc_code', 'account_holder_name']
+        bank_values = [data.get(field) for field in bank_fields]
+        
+        if any(bank_values):  # If any bank field is filled
+            if not all(bank_values):  # All must be filled
+                raise serializers.ValidationError({
+                    'bank_details': 'All bank details required if providing bank information'
+                })
+        
+        return data

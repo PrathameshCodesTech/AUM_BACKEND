@@ -33,7 +33,8 @@ from .views import (
     CPInviteStatusView,
     
     # Performance
-    CPPerformanceView,
+  
+    AdminCPApprovalView
 )
 
 urlpatterns = [
@@ -54,7 +55,7 @@ urlpatterns = [
     # DASHBOARD
     # ============================================
     path('dashboard/stats/', CPDashboardStatsView.as_view(), name='cp-dashboard-stats'),
-    path('performance/', CPPerformanceView.as_view(), name='cp-performance'),
+    
     
     # ============================================
     # PROPERTIES
@@ -84,4 +85,5 @@ urlpatterns = [
     # ============================================
     path('invites/', CPInviteListCreateView.as_view(), name='cp-invites'),
     path('invites/<str:code>/status/', CPInviteStatusView.as_view(), name='cp-invite-status'),
+    path('admin/applications/<int:cp_id>/approve/', AdminCPApprovalView.as_view(), name='admin-cp-approve'),
 ]

@@ -8,7 +8,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class SendOTPSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15, required=True)
     is_signup = serializers.BooleanField(required=False, default=False)
@@ -91,97 +90,275 @@ class SendOTPSerializer(serializers.Serializer):
 
         return data
 
-    def send_otp(self):
+    def send_otp(self, request=None):
+        """Send OTP using database model"""
+        from accounts.models import OTPVerification
+        from django.utils import timezone
+        from datetime import timedelta
+        from django.conf import settings
+        import random
+        
         phone = self.validated_data['phone']
         is_signup = self.validated_data.get('is_signup', False)
         name = self.validated_data.get('name', '')
         email = self.validated_data.get('email', '')
-
-        # Generate 6-digit OTP
-        otp = ''.join([str(random.randint(0, 9)) for _ in range(6)])
-
-        # Store OTP in cache (expires in 5 minutes)
-        cache_key = f"otp_{phone}"
-        cache.set(cache_key, otp, timeout=300)
         
-        # Store signup data temporarily (for new users)
+        # Get IP address
+        ip_address = None
+        if request:
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                ip_address = x_forwarded_for.split(',')[0]
+            else:
+                ip_address = request.META.get('REMOTE_ADDR')
+        
+        # ============================================
+        # RATE LIMITING CHECK
+        # ============================================
+        can_send, request_count = OTPVerification.check_rate_limit(
+            phone=phone,
+            minutes=15,
+            max_requests=3
+        )
+        
+        if not can_send:
+            raise serializers.ValidationError({
+                'error': 'rate_limit_exceeded',
+                'message': f'Too many OTP requests. Please try again after 15 minutes. (Attempts: {request_count}/3)'
+            })
+        
+        # ============================================
+        # CHECK FOR EXISTING ACTIVE OTP
+        # ============================================
+        existing_otp = OTPVerification.get_active_otp(phone)
+        
+        if existing_otp and not existing_otp.is_expired():
+            # OTP still valid - resend same OTP
+            logger.info(f"Resending existing OTP for {phone}")
+            otp_code = existing_otp.otp_code
+            
+            # Send SMS with existing OTP
+            sms_service = RouteMobileSMS()
+            sms_result = sms_service.send_otp(phone, otp_code)
+            
+            if sms_result['success']:
+                # Update SMS tracking
+                existing_otp.sms_sent = True
+                existing_otp.sms_message_id = sms_result.get('message_id', '')
+                existing_otp.save(update_fields=['sms_sent', 'sms_message_id', 'updated_at'])
+                
+                time_remaining = (existing_otp.expires_at - timezone.now()).seconds // 60
+                
+                return {
+                    'success': True,
+                    'phone': phone,
+                    'message': f'OTP resent successfully. Valid for {time_remaining} minutes.',
+                    'message_id': sms_result.get('message_id'),
+                    'otp': otp_code if sms_result.get('status') == 'TEST_MODE' else None,
+                    'expires_in_minutes': time_remaining
+                }
+            else:
+                raise serializers.ValidationError(
+                    sms_result.get('error', 'Failed to send OTP. Please try again.')
+                )
+        
+        # ============================================
+        # DEACTIVATE OLD OTPs
+        # ============================================
+        OTPVerification.objects.filter(
+            phone=phone,
+            is_active=True
+        ).update(is_active=False)
+        
+        # ============================================
+        # GENERATE NEW OTP
+        # ============================================
+        is_test_mode = getattr(settings, 'ROUTE_MOBILE_TEST_MODE', True)
+        
+        if is_test_mode:
+            otp_code = '123456'
+        else:
+            otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+        
+        # Set expiry (5 minutes)
+        expires_at = timezone.now() + timedelta(minutes=5)
+        
+        # Determine purpose
+        purpose = 'signup' if is_signup else 'login'
+        
+        # ============================================
+        # CREATE OTP RECORD
+        # ============================================
+        otp_record = OTPVerification.objects.create(
+            phone=phone,
+            otp_code=otp_code,
+            expires_at=expires_at,
+            ip_address=ip_address,
+            purpose=purpose,
+            is_active=True,
+            is_verified=False,
+            attempt_count=0
+        )
+        
+        logger.info(f"Generated new OTP for {phone}: {otp_code} (Purpose: {purpose})")
+        
+        # ============================================
+        # STORE SIGNUP DATA IN CACHE (TEMPORARY)
+        # ============================================
         if is_signup and (name or email):
+            from django.core.cache import cache
             signup_data = {
                 'name': name,
                 'email': email,
                 'is_signup': True
             }
             cache.set(f"signup_data_{phone}", signup_data, timeout=300)
-
-        logger.info(f"Generated OTP for {phone}: {otp} (Signup: {is_signup})")
-
-        # Send OTP via Route Mobile
+        
+        # ============================================
+        # SEND SMS
+        # ============================================
         sms_service = RouteMobileSMS()
-        result = sms_service.send_otp(phone, otp)
-
-        if result['success']:
-            # Store message_id for tracking (optional)
-            if result.get('message_id'):
-                cache.set(f"otp_msg_{phone}", result['message_id'], timeout=300)
-
+        sms_result = sms_service.send_otp(phone, otp_code)
+        
+        if sms_result['success']:
+            # Update OTP record with SMS status
+            otp_record.sms_sent = True
+            otp_record.sms_message_id = sms_result.get('message_id', '')
+            otp_record.save(update_fields=['sms_sent', 'sms_message_id'])
+            
             return {
                 'success': True,
                 'phone': phone,
                 'message': 'OTP sent successfully',
-                'message_id': result.get('message_id'),
-                # Include OTP in test mode only
-                'otp': otp if result.get('status') == 'TEST_MODE' else None
+                'message_id': sms_result.get('message_id'),
+                'otp': otp_code if sms_result.get('status') == 'TEST_MODE' else None,
+                'expires_in_minutes': 5
             }
         else:
-            # SMS failed, but OTP is still valid (user can retry)
+            # SMS failed - mark OTP as not sent but keep it active for retry
+            logger.warning(f"SMS failed for {phone}, but OTP record exists in DB")
+            
             raise serializers.ValidationError(
-                result.get('error', 'Failed to send OTP. Please try again.')
+                sms_result.get('error', 'Failed to send OTP. Please try again.')
             )
 
-
 # accounts/serializers.py
-
 class VerifyOTPSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15, required=True)
     otp = serializers.CharField(max_length=6, required=True)
 
     def validate_phone(self, value):
         """Normalize phone number (same as SendOTP)"""
-        # Remove any spaces or special characters
-        phone = value.strip().replace(' ', '').replace('-', '')
-
-        # Add +91 prefix if not present
-        if not phone.startswith('+91'):
-            phone = '+91' + phone.lstrip('0')
-
-        if len(phone) < 13:  # +91 (3) + 10 digits
-            raise serializers.ValidationError("Invalid phone number")
-
+        import re
+        
+        # Remove any spaces, dashes, or other non-digit characters except +
+        phone = re.sub(r'[^\d+]', '', value.strip())
+        
+        # Remove + temporarily for digit counting
+        digits_only = phone.replace('+', '')
+        
+        # Handle different formats
+        if len(digits_only) == 10:
+            phone = f'+91{digits_only}'
+        elif len(digits_only) == 12 and digits_only.startswith('91'):
+            phone = f'+{digits_only}'
+        elif len(digits_only) == 11 and digits_only.startswith('0'):
+            phone = f'+91{digits_only[1:]}'
+        elif phone.startswith('+91') and len(digits_only) == 12:
+            pass
+        else:
+            raise serializers.ValidationError("Invalid phone number format")
+        
+        # Final validation
+        if not re.match(r'^\+91\d{10}$', phone):
+            raise serializers.ValidationError("Phone must be in format +91XXXXXXXXXX")
+        
         return phone
 
     def validate(self, data):
-        phone = data.get('phone')  # Already normalized by validate_phone
-        otp = data.get('otp')
-
-        # Get OTP from cache
-        cache_key = f"otp_{phone}"
-        stored_otp = cache.get(cache_key)
-
-        if not stored_otp:
-            raise serializers.ValidationError("OTP expired or invalid")
-
-        if stored_otp != otp:
-            raise serializers.ValidationError("Invalid OTP")
-
-        # OTP is valid, delete it from cache
-        cache.delete(cache_key)
-
+        """Validate OTP against database"""
+        from accounts.models import OTPVerification
+        from django.utils import timezone
+        
+        phone = data.get('phone')
+        otp_code = data.get('otp')
+        
+        # ============================================
+        # GET ACTIVE OTP FROM DATABASE
+        # ============================================
+        otp_record = OTPVerification.get_active_otp(phone)
+        
+        if not otp_record:
+            raise serializers.ValidationError({
+                'error': 'otp_not_found',
+                'message': 'OTP expired or not found. Please request a new OTP.'
+            })
+        
+        # ============================================
+        # CHECK IF OTP IS VALID
+        # ============================================
+        if not otp_record.is_valid():
+            if otp_record.is_expired():
+                raise serializers.ValidationError({
+                    'error': 'otp_expired',
+                    'message': 'OTP has expired. Please request a new OTP.'
+                })
+            
+            if otp_record.attempt_count >= otp_record.max_attempts:
+                raise serializers.ValidationError({
+                    'error': 'max_attempts_exceeded',
+                    'message': 'Too many failed attempts. Please request a new OTP.'
+                })
+            
+            if otp_record.is_verified:
+                raise serializers.ValidationError({
+                    'error': 'otp_already_used',
+                    'message': 'OTP already used. Please request a new OTP.'
+                })
+            
+            raise serializers.ValidationError({
+                'error': 'otp_invalid',
+                'message': 'Invalid OTP. Please try again.'
+            })
+        
+        # ============================================
+        # VERIFY OTP CODE
+        # ============================================
+        if otp_record.otp_code != otp_code:
+            # Increment attempt count
+            otp_record.increment_attempt()
+            
+            attempts_remaining = otp_record.max_attempts - otp_record.attempt_count
+            
+            if attempts_remaining > 0:
+                raise serializers.ValidationError({
+                    'error': 'otp_mismatch',
+                    'message': f'Invalid OTP. {attempts_remaining} attempts remaining.'
+                })
+            else:
+                raise serializers.ValidationError({
+                    'error': 'max_attempts_exceeded',
+                    'message': 'Too many failed attempts. Please request a new OTP.'
+                })
+        
+        # ============================================
+        # OTP VERIFIED SUCCESSFULLY
+        # ============================================
+        otp_record.mark_verified()
+        logger.info(f"OTP verified successfully for {phone}")
+        
+        # Store OTP record in validated data for later use
+        data['_otp_record'] = otp_record
+        
         return data
 
     def get_or_create_user(self):
-        phone = self.validated_data['phone']  # Already has +91
+        """Get or create user after OTP verification"""
+        phone = self.validated_data['phone']
+        otp_record = self.validated_data.get('_otp_record')
         
         # Get signup data from cache (if exists)
+        from django.core.cache import cache
         signup_data = cache.get(f"signup_data_{phone}", {})
         is_signup = signup_data.get('is_signup', False)
         name = signup_data.get('name', '')
@@ -234,7 +411,7 @@ class VerifyOTPSerializer(serializers.Serializer):
             cache.delete(f"signup_data_{phone}")
             
             # ============================================
-            # HANDLE CP REFERRAL CODES (NEW)
+            # HANDLE CP REFERRAL CODES
             # ============================================
             if created:
                 try:
@@ -279,7 +456,6 @@ class VerifyOTPSerializer(serializers.Serializer):
                             logger.warning(f"Invalid referral code: {referral_code}")
                     
                     # Priority 3: Check if user exists in any CP Lead
-                    # If customer matches a lead's phone, convert lead
                     try:
                         lead = CPLead.objects.filter(
                             phone=phone,
@@ -299,7 +475,6 @@ class VerifyOTPSerializer(serializers.Serializer):
                     logger.error(f"Error handling CP referral for {phone}: {e}")
 
         return user, created
-
 
 class UserRegistrationSerializer(serializers.Serializer):
     """Complete user profile after OTP verification"""
@@ -351,6 +526,9 @@ class UserSerializer(serializers.ModelSerializer):
             'kyc_status', 'role', 'permissions',
             'is_indian',  # 👈 ADD THIS
             'profile_completed',  # 👈 ADD THIS
+            'is_cp',              # NEW
+            'cp_status',          # NEW
+            'is_active_cp',       # NEW
         ]
         read_only_fields = ['phone', 'phone_verified', 'kyc_status', 'profile_completed']
 

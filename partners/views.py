@@ -35,54 +35,111 @@ from .services.referral_service import ReferralService
 # ============================================
 # CP APPLICATION & PROFILE
 # ============================================
-
 class CPApplicationView(APIView):
     """
     POST /api/cp/apply/
-    Apply to become a Channel Partner
+    Apply to become a Channel Partner - PUBLIC ENDPOINT
+    Creates user account automatically
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = []  # ✅ PUBLIC - No authentication required
     
     def post(self, request):
-        # Check if user already has CP profile
-        if hasattr(request.user, 'cp_profile'):
+        from accounts.models import User, Role
+        import random
+        import string
+        
+        data = request.data
+        
+        # Extract user info
+        phone = data.get('phone')
+        email = data.get('email')
+        name = data.get('name', '')
+        
+        # Validate required fields
+        if not phone or not email or not name:
             return Response(
-                {'error': 'You already have a Channel Partner profile'},
+                {'error': 'Name, email, and phone are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Check KYC
-        if not request.user.kyc_verified:
+        # Check if user already exists
+        if User.objects.filter(phone=f'+91{phone}').exists():
             return Response(
-                {'error': 'KYC verification required before applying'},
+                {'error': 'Phone number already registered'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        serializer = CPApplicationSerializer(data=request.data)
-        if serializer.is_valid():
+        if User.objects.filter(email=email).exists():
+            return Response(
+                {'error': 'Email already registered'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Generate random password (8 characters)
+            temp_password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+            
+            # Format phone number
+            formatted_phone = f'+91{phone}'
+            
+            # Create user account
+            user = User.objects.create(
+                username=formatted_phone,
+                phone=formatted_phone,
+                email=email,
+                first_name=name.split()[0] if name else '',
+                last_name=' '.join(name.split()[1:]) if len(name.split()) > 1 else '',
+                is_active=False,  # Inactive until approved
+            )
+            user.set_password(temp_password)
+            
+            # Assign Channel Partner role
             try:
+                cp_role = Role.objects.get(slug='channel_partner')
+                user.role = cp_role
+            except Role.DoesNotExist:
+                pass
+            
+            # Set CP flags
+            user.is_cp = True
+            user.cp_status = 'pending'
+            user.save()
+            
+            # Create CP application using service
+            serializer = CPApplicationSerializer(data=data)
+            if serializer.is_valid():
                 cp = CPService.create_cp_application(
-                    user=request.user,
+                    user=user,
                     application_data=serializer.validated_data
                 )
                 
-                response_serializer = CPProfileSerializer(cp)
+                # TODO: Send email with credentials
+                # send_cp_application_email(user, temp_password, cp)
+                
                 return Response(
                     {
-                        'message': 'Application submitted successfully',
-                        'data': response_serializer.data
+                        'success': True,
+                        'message': 'Application submitted successfully. You will receive login credentials via email after approval.',
+                        'application_id': cp.id,
+                        # Include temp password in response (ONLY FOR TESTING - remove in production)
+                        'temp_credentials': {
+                            'username': formatted_phone,
+                            'password': temp_password
+                        }
                     },
                     status=status.HTTP_201_CREATED
                 )
             
-            except ValueError as e:
-                return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            else:
+                # If application creation fails, delete the user
+                user.delete()
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class CPApplicationStatusView(APIView):
     """
@@ -337,7 +394,7 @@ class CPCommissionsView(APIView):
             'investment',
             'investment__property',
             'investment__customer'
-        ).order_by('-calculated_at')
+        ).order_by('-created_at')
         
         serializer = CommissionSerializer(commissions, many=True)
         
@@ -555,32 +612,65 @@ class CPInviteStatusView(APIView):
 # PERFORMANCE
 # ============================================
 
-class CPPerformanceView(APIView):
+# ============================================
+# ADMIN: CP APPLICATION APPROVAL
+# ============================================
+
+class AdminCPApprovalView(APIView):
     """
-    GET /api/cp/performance/
-    Get CP performance metrics
+    POST /api/admin/cp/applications/{cp_id}/approve/
+    Admin approves CP application and activates account
     """
-    permission_classes = [IsAuthenticated, IsChannelPartner]
+    permission_classes = [IsAuthenticated]  # Add IsAdminUser permission
     
-    def get(self, request):
-        cp = request.user.cp_profile
+    def post(self, request, cp_id):
+        from accounts.models import User
         
-        return Response({
-            'quarterly_performance': {
-                'q1': str(cp.q1_performance),
-                'q2': str(cp.q2_performance),
-                'q3': str(cp.q3_performance),
-                'q4': str(cp.q4_performance),
-            },
-            'targets': {
-                'monthly': str(cp.monthly_target),
-                'quarterly': str(cp.quarterly_target),
-                'yearly': str(cp.yearly_target),
-                'annual': str(cp.annual_revenue_target),
-            },
-            'tier': cp.partner_tier,
-            'program_dates': {
-                'start': cp.program_start_date,
-                'end': cp.program_end_date,
-            }
-        })
+        # Check if user is admin
+        if not request.user.is_admin and not request.user.is_staff:
+            return Response(
+                {'error': 'Admin access required'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            cp = ChannelPartner.objects.get(id=cp_id)
+            user = cp.user
+            
+            # Get tier from request
+            tier = request.data.get('tier', 'bronze')
+            notes = request.data.get('notes', '')
+            
+            # Update CP
+            cp.onboarding_status = 'completed'
+            cp.partner_tier = tier
+            cp.is_verified = True
+            cp.is_active = True
+            if notes:
+                cp.notes = notes
+            cp.save()
+            
+            # Activate user account
+            user.is_active = True
+            user.is_active_cp = True
+            user.cp_status = 'approved'
+            user.save()
+            
+            # TODO: Send approval email with login credentials
+            # send_cp_approval_email(user, cp)
+            
+            return Response({
+                'success': True,
+                'message': f'CP application approved. User account activated.',
+                'data': {
+                    'cp_code': cp.cp_code,
+                    'tier': cp.partner_tier,
+                    'user_active': user.is_active
+                }
+            })
+        
+        except ChannelPartner.DoesNotExist:
+            return Response(
+                {'error': 'CP application not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
