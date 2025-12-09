@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
+from rest_framework.decorators import api_view, permission_classes
+
 
 from accounts.permissions import IsChannelPartner
 from .models import (
@@ -568,14 +570,40 @@ class CPInviteListCreateView(APIView):
             'results': serializer.data
         })
     
+    
     def post(self, request):
         cp = request.user.cp_profile
         
+        # Check if bulk request
+        if 'invites' in request.data:
+            # BULK CREATION
+            serializer = CPInviteCreateSerializer(data=request.data)
+            if serializer.is_valid():
+                bulk_invites = []
+                
+                for invite_data in serializer.validated_data['invites']:
+                    invite = ReferralService.create_invite(cp, invite_data)
+                    invite_link = ReferralService.generate_signup_invite_link(invite.invite_code)
+                    bulk_invites.append({
+                        'invite_code': invite.invite_code,
+                        'invite_link': invite_link,
+                        'phone': invite.phone,
+                        'email': invite.email,
+                        'name': invite.name,
+                    })
+                
+                return Response(
+                    {
+                        'message': f'Created {len(bulk_invites)} invites successfully',
+                        'invites': bulk_invites
+                    },
+                    status=status.HTTP_201_CREATED
+                )
+        
+        # SINGLE INVITE (existing logic)
         serializer = CPInviteCreateSerializer(data=request.data)
         if serializer.is_valid():
             invite = ReferralService.create_invite(cp, serializer.validated_data)
-            
-            # Generate invite link
             invite_link = ReferralService.generate_signup_invite_link(invite.invite_code)
             
             response_serializer = CPInviteSerializer(invite)
@@ -590,6 +618,7 @@ class CPInviteListCreateView(APIView):
             )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class CPInviteStatusView(APIView):
@@ -674,3 +703,275 @@ class AdminCPApprovalView(APIView):
                 {'error': 'CP application not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsChannelPartner])
+def get_permanent_invite(request):
+    """
+    GET /api/cp/permanent-invite/
+    Get CP's permanent invite link and stats
+    """
+    from partners.models import CPInvite, CPCustomerRelation
+    from commissions.models import Commission
+    from investments.models import Investment
+    from django.db.models import Sum, Count
+    
+    cp = request.user.cp_profile
+    
+    # Get or create permanent invite
+    invite = CPInvite.objects.filter(
+        cp=cp,
+        is_permanent=True
+    ).first()
+    
+    if not invite:
+        return Response({
+            'success': False,
+            'error': 'No permanent invite found. Contact admin to create one.',
+            'has_invite': False
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Generate invite link
+    from partners.services.referral_service import ReferralService
+    invite_link = ReferralService.generate_signup_invite_link(invite.invite_code)
+    
+    # Get stats - all users who signed up via this invite
+    relations = CPCustomerRelation.objects.filter(
+        cp=cp,
+        referral_code=invite.invite_code,
+        is_active=True
+    )
+    
+    total_signups = relations.count()
+    
+    # Get customers who invested
+    customer_ids = relations.values_list('customer_id', flat=True)
+    
+    investments = Investment.objects.filter(
+        customer_id__in=customer_ids,
+        status__in=['pending', 'approved', 'active', 'completed']
+    )
+    
+    invested_customers = investments.values('customer').distinct().count()
+    total_investment = investments.aggregate(Sum('amount'))['amount__sum'] or 0
+    
+    # Commission stats
+    commissions = Commission.objects.filter(
+        cp=cp,
+        investment__customer_id__in=customer_ids
+    )
+    
+    total_commission = commissions.filter(
+        status__in=['approved', 'paid']
+    ).aggregate(Sum('net_amount'))['net_amount__sum'] or 0
+    
+    commission_pending = commissions.filter(
+        status='pending'
+    ).aggregate(Sum('net_amount'))['net_amount__sum'] or 0
+    
+    commission_paid = commissions.filter(
+        status='paid'
+    ).aggregate(Sum('net_amount'))['net_amount__sum'] or 0
+    
+    return Response({
+        'success': True,
+        'has_invite': True,
+        'data': {
+            'invite_code': invite.invite_code,
+            'invite_link': invite_link,
+            'cp_code': cp.cp_code,
+            'cp_name': cp.user.get_full_name(),
+            'stats': {
+                'total_signups': total_signups,
+                'invested_customers': invested_customers,
+                'conversion_rate': round((invested_customers / total_signups * 100), 2) if total_signups > 0 else 0,
+                'total_investment': float(total_investment),
+                'total_commission': float(total_commission),
+                'commission_pending': float(commission_pending),
+                'commission_paid': float(commission_paid),
+            }
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsChannelPartner])
+def get_invite_signups(request):
+    """
+    GET /api/cp/invite-signups/
+    Get list of users who signed up via CP's permanent invite
+    """
+    from partners.models import CPInvite, CPCustomerRelation
+    from investments.models import Investment
+    from commissions.models import Commission
+    from django.db.models import Sum, Q
+    
+    cp = request.user.cp_profile
+    
+    # Get permanent invite
+    invite = CPInvite.objects.filter(
+        cp=cp,
+        is_permanent=True
+    ).first()
+    
+    if not invite:
+        return Response({
+            'success': False,
+            'error': 'No permanent invite found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Query params
+    status_filter = request.query_params.get('status')  # 'signed_up', 'invested'
+    search = request.query_params.get('search')
+    
+    # Get all relations via this invite
+    relations = CPCustomerRelation.objects.filter(
+        cp=cp,
+        referral_code=invite.invite_code,
+        is_active=True
+    ).select_related('customer').order_by('-referral_date')
+    
+    # Search filter
+    if search:
+        relations = relations.filter(
+            Q(customer__first_name__icontains=search) |
+            Q(customer__last_name__icontains=search) |
+            Q(customer__phone__icontains=search) |
+            Q(customer__email__icontains=search)
+        )
+    
+    # Build response
+    signups = []
+    
+    for relation in relations:
+        customer = relation.customer
+        
+        # Get investment info
+        investments = Investment.objects.filter(
+            customer=customer,
+            status__in=['pending', 'approved', 'active', 'completed']
+        )
+        
+        has_invested = investments.exists()
+        total_invested = investments.aggregate(Sum('amount'))['amount__sum'] or 0
+        investment_count = investments.count()
+        
+        # Determine status
+        signup_status = 'invested' if has_invested else 'signed_up'
+        
+        # Apply status filter
+        if status_filter and status_filter != signup_status:
+            continue
+        
+        # Get commission info
+        commission_earned = Commission.objects.filter(
+            cp=cp,
+            investment__customer=customer,
+            status__in=['approved', 'paid']
+        ).aggregate(Sum('net_amount'))['net_amount__sum'] or 0
+        
+        signups.append({
+            'id': relation.id,
+            'customer_id': customer.id,
+            'customer_name': customer.get_full_name() or customer.username,
+            'customer_phone': customer.phone,
+            'customer_email': customer.email,
+            'signup_date': relation.referral_date,
+            'status': signup_status,
+            'has_invested': has_invested,
+            'investment_count': investment_count,
+            'total_invested': float(total_invested),
+            'commission_earned': float(commission_earned),
+        })
+    
+    return Response({
+        'success': True,
+        'count': len(signups),
+        'data': signups
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def send_invite_email(request):
+    """
+    POST /api/cp/send-invite-email/
+    Body: { "email": "recipient@example.com" }
+    
+    CP sends invite email to a recipient with their permanent invite link
+    """
+    # Check if user is CP
+    if not hasattr(request.user, 'cp_profile'):
+        return Response({
+            'success': False,
+            'error': 'User is not a Channel Partner'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    cp = request.user.cp_profile
+    recipient_email = request.data.get('email')
+    
+    # Validate email
+    if not recipient_email:
+        return Response({
+            'success': False,
+            'error': 'Email address is required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validate email format
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    try:
+        validate_email(recipient_email)
+    except ValidationError:
+        return Response({
+            'success': False,
+            'error': 'Invalid email address format'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get CP's permanent invite
+    invite = CPInvite.objects.filter(
+        cp=cp,
+        is_permanent=True,
+        is_expired=False
+    ).first()
+    
+    if not invite:
+        return Response({
+            'success': False,
+            'error': 'No active permanent invite found. Please contact admin.'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Generate invite link (frontend URL)
+    invite_link = f"http://localhost:5173/signup?invite={invite.invite_code}"
+    
+    # Get CP name
+    cp_name = request.user.get_full_name() or request.user.username or f"Channel Partner {cp.cp_code}"
+    
+    try:
+        # Import email service
+        from accounts.services.email_service import send_dynamic_email
+        
+        # Send email
+        send_dynamic_email(
+            email_type='cp_referral_invite',
+            to=recipient_email,
+            params={
+                'cp_name': cp_name,
+                'invite_link': invite_link,
+                'website': 'https://assetkart.com',
+                'support_email': 'support@assetkart.com'
+            }
+        )
+        
+        return Response({
+            'success': True,
+            'message': f'Invitation successfully sent to {recipient_email}',
+            'recipient': recipient_email
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': f'Failed to send email: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

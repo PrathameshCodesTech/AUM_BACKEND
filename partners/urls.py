@@ -34,7 +34,10 @@ from .views import (
     
     # Performance
   
-    AdminCPApprovalView
+    AdminCPApprovalView,
+    get_permanent_invite,
+    get_invite_signups,
+    send_invite_email
 )
 
 urlpatterns = [
@@ -86,4 +89,8 @@ urlpatterns = [
     path('invites/', CPInviteListCreateView.as_view(), name='cp-invites'),
     path('invites/<str:code>/status/', CPInviteStatusView.as_view(), name='cp-invite-status'),
     path('admin/applications/<int:cp_id>/approve/', AdminCPApprovalView.as_view(), name='admin-cp-approve'),
+
+    path('permanent-invite/', get_permanent_invite, name='cp-permanent-invite'),
+    path('invite-signups/', get_invite_signups, name='cp-invite-signups'),
+    path('send-invite-email/', send_invite_email, name='send_invite_email'),
 ]

@@ -31,7 +31,8 @@ from .admin_views import (
     AdminCPCustomerRelationExtendView,
     AdminCPCustomerRelationDeleteView,
     AdminCPAuthorizedPropertiesView,  # 👈 ADD THIS
-    AdminCreateCPView
+    AdminCreateCPView,
+    admin_create_permanent_invite
 )
 
 urlpatterns = [
@@ -84,4 +85,5 @@ urlpatterns = [
     path('customer-relations/', AdminCPCustomerRelationsView.as_view(), name='admin-cp-customer-relations'),
     path('customer-relations/<int:relation_id>/extend/', AdminCPCustomerRelationExtendView.as_view(), name='admin-cp-relation-extend'),
     path('customer-relations/<int:relation_id>/', AdminCPCustomerRelationDeleteView.as_view(), name='admin-cp-relation-delete'),
+    path('<int:cp_id>/create-permanent-invite/', admin_create_permanent_invite, name='admin-create-permanent-invite'),
 ]

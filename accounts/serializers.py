@@ -4,6 +4,7 @@ from accounts.models import User, Role
 from accounts.services import RouteMobileSMS
 from django.core.cache import cache
 import random
+from django.db import models  # Add this if not present
 import logging
 
 logger = logging.getLogger(__name__)
@@ -407,6 +408,50 @@ class VerifyOTPSerializer(serializers.Serializer):
             except Role.DoesNotExist:
                 logger.warning("Customer role not found. Creating user without role.")
             
+
+
+# ============================================
+# 🆕 SEND SIGNUP CONFIRMATION EMAIL
+# ============================================
+             
+            print("🔵 DEBUG: Checking email send conditions...")
+            print(f"🔵 created = {created}")
+            print(f"🔵 email = {email}")
+            print(f"🔵 email bool = {bool(email)}")
+            if created and email:
+                print("🟢 DEBUG: Inside email sending block!")
+                try:
+                    print("🟢 Attempting to import send_dynamic_email...")
+                    from accounts.services.email_service import send_dynamic_email
+                    from django.conf import settings
+                    
+                    # Prepare email parameters
+                    print("🟢 Import successful!")
+                    user_name = name if name else user.username
+                    print(f"🟢 user_name = {user_name}")
+                    login_link = f"{settings.FRONTEND_BASE_URL}/login"  # You'll need to add FRONTEND_URL to settings
+                    
+                    # Send email
+                    send_dynamic_email(
+                        email_type='signup_confirmation',
+                        to=email,
+                        params={
+                            'name': user_name,
+                            'login_link': login_link,
+                            'website': 'https://assetkart.com',
+                            'support_email': 'support@assetkart.com'
+                        }
+                    )
+                    
+                    logger.info(f"✅ Signup confirmation email sent to {email}")
+                    
+                except Exception as e:
+                    # Don't fail signup if email fails
+                    logger.error(f"❌ Failed to send signup email to {email}: {str(e)}")
+
+
+
+
             # Clear signup data from cache after user creation
             cache.delete(f"signup_data_{phone}")
             
@@ -420,24 +465,30 @@ class VerifyOTPSerializer(serializers.Serializer):
                     from django.utils import timezone
                     
                     # Priority 1: Handle CP Invite Code
+                    # Priority 1: Handle CP Invite Code
                     if invite_code:
                         try:
-                            invite = CPInvite.objects.get(
+                            # ✅ MODIFIED: Allow permanent invites even if "used"
+                            invite = CPInvite.objects.filter(
                                 invite_code=invite_code,
-                                is_used=False,
                                 is_expired=False
-                            )
+                            ).filter(
+                                models.Q(is_used=False) | models.Q(is_permanent=True)
+                            ).first()
                             
-                            # Check expiry
-                            if invite.expiry_date >= timezone.now():
-                                # Mark invite as used and create CP-Customer relation
-                                invite.mark_as_used(user)
-                                logger.info(f"User {phone} linked to CP via invite: {invite_code}")
+                            if invite:
+                                # Check expiry (permanent invites have no expiry)
+                                if invite.is_permanent or (invite.expiry_date and invite.expiry_date >= timezone.now()):
+                                    # Mark invite as used and create CP-Customer relation
+                                    invite.mark_as_used(user)
+                                    logger.info(f"User {phone} linked to CP via invite: {invite_code}")
+                                else:
+                                    logger.warning(f"Invite code expired: {invite_code}")
                             else:
-                                logger.warning(f"Invite code expired: {invite_code}")
+                                logger.warning(f"Invalid or expired invite code: {invite_code}")
                         
-                        except CPInvite.DoesNotExist:
-                            logger.warning(f"Invalid invite code: {invite_code}")
+                        except Exception as e:
+                            logger.error(f"Error processing invite code {invite_code}: {e}")
                     
                     # Priority 2: Handle CP Referral Code (if no invite used)
                     elif referral_code:
@@ -591,3 +642,22 @@ class CompleteProfileSerializer(serializers.Serializer):
         instance.profile_completed = True
         instance.save()
         return instance
+    
+
+class SendEmailSerializer(serializers.Serializer):
+    email_type = serializers.ChoiceField(
+        choices=[
+            'signup_confirmation',
+            'onboarding_completion',
+            'eoi_approved',
+            'payment_receipt',
+            'feedback_request',
+            'ticket_generated',
+            'ticket_resolved',
+            'upcoming_product',
+            'new_product',
+        ]
+    )
+    
+    to = serializers.EmailField()
+    params = serializers.DictField()

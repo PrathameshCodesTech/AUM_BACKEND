@@ -7,7 +7,8 @@ from .views import (
     CreateInvestmentView,
     MyInvestmentsView,
     InvestmentDetailView,
-    PortfolioAnalyticsView
+    PortfolioAnalyticsView,
+    check_cp_relation
 )
 
 app_name = 'investments'
@@ -22,5 +23,5 @@ urlpatterns = [
     path('investments/my-investments/', MyInvestmentsView.as_view(), name='my-investments'),
     path('investments/<int:investment_id>/details/', InvestmentDetailView.as_view(), name='investment-detail'),
     path('investments/portfolio/analytics/', PortfolioAnalyticsView.as_view(), name='portfolio-analytics'),
-    
+    path('investments/check-cp-relation/', check_cp_relation, name='check-cp-relation'),
 ]

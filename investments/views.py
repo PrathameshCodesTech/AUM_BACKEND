@@ -7,6 +7,8 @@ from .serializers import WalletSerializer, TransactionSerializer,CreateInvestmen
 from .models import Wallet, Investment  # 👈 ADD Investment HERE!
 from decimal import Decimal  # ←
 from .services.investment_service import InvestmentService
+from rest_framework.decorators import api_view, permission_classes
+
 
 class CreateWalletView(APIView):
     """
@@ -117,9 +119,38 @@ class CreateInvestmentView(APIView):
     def post(self, request):
         import logging
         logger = logging.getLogger(__name__)
+        from partners.models import CPCustomerRelation
         
         logger.info(f"📥 Received investment request: {request.data}")
         
+        # ============================================
+        # VALIDATION: Check CP Relation Conflict
+        # ============================================
+        existing_cp = CPCustomerRelation.objects.filter(
+            customer=request.user,
+            is_active=True,
+            is_expired=False
+        ).first()
+        
+        # Get referral_code from request
+        referral_code = request.data.get('referral_code')
+        
+        # If user has CP relation AND trying to use different code
+        if existing_cp and referral_code:
+            # Check if referral code matches existing CP
+            if referral_code != existing_cp.cp.cp_code:
+                logger.warning(f"❌ User {request.user.phone} already linked to {existing_cp.cp.cp_code}, tried to use {referral_code}")
+                return Response({
+                    'success': False,
+                    'error': 'invalid_referral',
+                    'message': f'You are already linked to {existing_cp.cp.cp_code}. Cannot use a different referral code.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                logger.info(f"✅ User using correct CP code: {referral_code}")
+        
+        # ============================================
+        # Continue with normal validation
+        # ============================================
         serializer = CreateInvestmentSerializer(data=request.data)
         
         if not serializer.is_valid():
@@ -137,7 +168,7 @@ class CreateInvestmentView(APIView):
                 property_obj=serializer.validated_data['property'],
                 amount=serializer.validated_data['amount'],
                 units_count=serializer.validated_data['units_count'],
-                referral_code=serializer.validated_data.get('referral_code')  # ← NEW
+                referral_code=serializer.validated_data.get('referral_code')
             )
             
             logger.info(f"✅ Investment service returned: {investment.investment_id}")
@@ -540,3 +571,36 @@ class PortfolioAnalyticsView(APIView):
             'payout_history': payout_history,
             'property_types': property_types
         }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_cp_relation(request):
+    """
+    GET /api/wallet/investments/check-cp-relation/
+    Check if user is linked to any CP
+    """
+    from partners.models import CPCustomerRelation
+    
+    cp_relation = CPCustomerRelation.objects.filter(
+        customer=request.user,
+        is_active=True,
+        is_expired=False
+    ).first()
+    
+    if cp_relation:
+        return Response({
+            'success': True,
+            'has_cp_relation': True,
+            'cp_details': {
+                'cp_code': cp_relation.cp.cp_code,
+                'cp_name': cp_relation.cp.user.get_full_name(),
+                'referral_date': cp_relation.referral_date,
+                'is_active': cp_relation.is_active,
+            }
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'success': True,
+        'has_cp_relation': False
+    }, status=status.HTTP_200_OK)

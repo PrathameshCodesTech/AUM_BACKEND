@@ -38,7 +38,8 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG', default=True)
 
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.29.63']
+
 
 
 # Application definition
@@ -105,6 +106,9 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://192.168.29.107:3000",  # Friend's React app
+    "http://192.168.29.107:5173",  # Friend's Vite app
+
 ])
 
 
@@ -315,7 +319,18 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
 
-FRONTEND_BASE_URL = env('FRONTEND_BASE_URL', default='http://localhost:3000')
+FRONTEND_BASE_URL = env('FRONTEND_BASE_URL', default='http://localhost:5173')
 # ========================================
 CP_CUSTOMER_RELATION_VALIDITY_DAYS = env.int('CP_RELATION_VALIDITY_DAYS', default=90)
 CP_INVITE_VALIDITY_DAYS = env.int('CP_INVITE_VALIDITY_DAYS', default=30)
+
+
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'vasisayed09421@gmail.com'
+EMAIL_HOST_PASSWORD = 'zfwlrmkvnawjhiak'
+
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER

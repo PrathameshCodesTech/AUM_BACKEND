@@ -2,6 +2,7 @@
 from django.urls import path
 from accounts import views
 from accounts.views import CompleteProfileView,PortfolioView,DashboardStatsView,list_all_users
+from .mail_view import SendEmailAPI
 
 
 app_name = 'accounts'
@@ -17,4 +18,5 @@ urlpatterns = [
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('portfolio/<str:portfolio_type>/', PortfolioView.as_view(), name='portfolio'),
     path('auth/users/', views.list_all_users, name='list-users'), 
+    path("send/", SendEmailAPI.as_view(), name="send-email"),
 ]

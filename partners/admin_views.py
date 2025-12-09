@@ -8,6 +8,8 @@ from django.db.models import Q
 from django.db import transaction
 from django.utils import timezone
 from accounts.models import User, Role
+from rest_framework.decorators import api_view, permission_classes
+
 
 from accounts.permissions import IsAdmin
 from .models import (
@@ -561,7 +563,8 @@ class AdminCreateCPView(APIView):
         serializer = AdminCreateCPSerializer(data=request.data)
         
         if not serializer.is_valid():
-            return Response({...}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
         
         try:
             # Extract data
@@ -709,3 +712,74 @@ class AdminCreateCPView(APIView):
                 'error': str(e),
                 'message': 'Failed to create CP'
             }, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_create_permanent_invite(request, cp_id):
+    """
+    POST /api/admin/cp/{cp_id}/create-permanent-invite/
+    Admin creates a permanent invite for a CP
+    """
+    # Check if user is admin
+    if not request.user.is_admin and not request.user.is_staff:
+        return Response(
+            {'error': 'Admin access required'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    try:
+        from partners.models import ChannelPartner, CPInvite
+        from django.utils import timezone
+        
+        cp = ChannelPartner.objects.get(id=cp_id)
+        
+        # Check if CP already has a permanent invite
+        existing = CPInvite.objects.filter(
+            cp=cp,
+            is_permanent=True
+        ).first()
+        
+        if existing:
+            return Response({
+                'success': False,
+                'error': 'CP already has a permanent invite',
+                'data': {
+                    'invite_code': existing.invite_code,
+                    'invite_link': f"http://localhost:5173/signup?invite={existing.invite_code}"
+                }
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create permanent invite using CP code
+        invite = CPInvite.objects.create(
+            cp=cp,
+            invite_code=cp.cp_code,  # Use CP code as invite code
+            phone='',  # Empty for permanent
+            email='',  # Empty for permanent
+            name='',   # Empty for permanent
+            is_permanent=True,
+            is_used=False,
+            is_expired=False,
+            expiry_date=None  # Never expires
+        )
+        
+        from partners.services.referral_service import ReferralService
+        invite_link = ReferralService.generate_signup_invite_link(invite.invite_code)
+        
+        return Response({
+            'success': True,
+            'message': 'Permanent invite created successfully',
+            'data': {
+                'invite_code': invite.invite_code,
+                'invite_link': invite_link,
+                'cp_code': cp.cp_code,
+                'cp_name': cp.user.get_full_name()
+            }
+        }, status=status.HTTP_201_CREATED)
+    
+    except ChannelPartner.DoesNotExist:
+        return Response(
+            {'error': 'CP not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )

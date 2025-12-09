@@ -521,23 +521,33 @@ class CPInviteSerializer(serializers.ModelSerializer):
         return not obj.is_used and not obj.is_expired and obj.expiry_date > timezone.now()
 
 
-class CPInviteCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating invites"""
+class CPInviteCreateSerializer(serializers.Serializer):
+    """Serializer for creating invites (single or bulk)"""
     
-    class Meta:
-        model = CPInvite
-        fields = [
-            'phone',
-            'email',
-            'name',
-            'message',
-        ]
+    # For single invite (existing)
+    phone = serializers.CharField(max_length=15, required=False)
+    email = serializers.EmailField(required=False)
+    name = serializers.CharField(max_length=255, required=False)
+    message = serializers.CharField(required=False)
     
-    def validate_phone(self, value):
-        """Validate phone format"""
-        if not value.startswith('+'):
-            raise serializers.ValidationError("Phone must start with country code (+91)")
+    # For bulk invites (new)
+    invites = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        help_text="List of invites for bulk creation"
+    )
+    
+    def validate_invites(self, value):
+        """Validate bulk invites format"""
+        if not value:
+            return value
+            
+        for invite in value:
+            if not invite.get('phone'):
+                raise serializers.ValidationError("Each invite must have a phone number")
+        
         return value
+
 
 
 # ============================================

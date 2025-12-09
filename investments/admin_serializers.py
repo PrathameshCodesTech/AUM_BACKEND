@@ -96,7 +96,7 @@ class AdminInvestmentDetailSerializer(serializers.ModelSerializer):
         }
     
     def get_commission_details(self, obj):
-        comm = obj.commission
+        comm = obj.commissions.filter(is_override=False).first()
         if not comm:
             return None
         

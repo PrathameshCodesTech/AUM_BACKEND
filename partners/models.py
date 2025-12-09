@@ -748,6 +748,11 @@ class CPInvite(TimestampedModel):
         default=False,
         help_text="Has invite been used?"
     )
+
+    is_permanent = models.BooleanField(
+        default=False,
+        help_text="Is this a permanent/reusable invite? (Multiple users can use it)"
+    )
     
     used_by = models.ForeignKey(
         User,
@@ -816,12 +821,15 @@ class CPInvite(TimestampedModel):
 
     def mark_as_used(self, user):
         """Mark invite as used when customer signs up"""
-        self.is_used = True
-        self.used_by = user
-        self.used_at = timezone.now()
-        self.save()
+        # ✅ MODIFIED: Don't mark permanent invites as "used"
+        if not self.is_permanent:
+            # One-time invite: mark as used
+            self.is_used = True
+            self.used_by = user
+            self.used_at = timezone.now()
+            self.save()
 
-        # Auto-create CP-Customer relationship
+        # Auto-create CP-Customer relationship (always happens)
         CPCustomerRelation.objects.get_or_create(
             cp=self.cp,
             customer=user,

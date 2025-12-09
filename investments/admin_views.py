@@ -209,6 +209,37 @@ class AdminInvestmentActionView(APIView):
             # Reduce available units in property
             investment.property.available_units -= investment.units_purchased
             investment.property.save()
+
+
+            
+            # ============================================
+            # 🆕 SEND EOI APPROVED EMAIL
+            # ============================================
+            if investment.customer.email:
+                try:
+                    from accounts.services.email_service import send_dynamic_email
+                    
+                    customer_name = investment.customer.get_full_name() or investment.customer.username
+                    project_name = investment.property.name
+                    
+                    send_dynamic_email(
+                        email_type='eoi_approved',
+                        to=investment.customer.email,
+                        params={
+                            'name': customer_name,
+                            'project_name': project_name,
+                        }
+                    )
+                    
+                    logger.info(f"✅ EOI approved email sent to {investment.customer.email}")
+                    
+                except Exception as e:
+                    # Don't fail approval if email fails
+                    logger.error(f"❌ Failed to send EOI approval email: {str(e)}")
+    
+    # ============================================
+    # CALCULATE CP COMMISSION (existing code continues...)
+    # ============================================
             
             # ============================================
             # CALCULATE CP COMMISSION (NEW)
@@ -280,7 +311,35 @@ class AdminInvestmentActionView(APIView):
             
             investment.payment_completed = True
             investment.payment_completed_at = timezone.now()
+            if investment.customer.email:
+                try:
+                    from accounts.services.email_service import send_dynamic_email
+                    from django.conf import settings
+                    
+                    customer_name = investment.customer.get_full_name() or investment.customer.username
+                    project_name = investment.property.name
+                    dashboard_link = f"{settings.FRONTEND_BASE_URL}/dashboard"
+                    
+                    send_dynamic_email(
+                        email_type='payment_receipt',
+                        to=investment.customer.email,
+                        params={
+                            'name': customer_name,
+                            'project_name': project_name,
+                            'working_days': '7',  # Customize this as needed
+                            'dashboard_link': dashboard_link,
+                        }
+                    )
+                    
+                    logger.info(f"✅ Payment receipt email sent to {investment.customer.email}")
+                    
+                except Exception as e:
+                    # Don't fail completion if email fails
+                    logger.error(f"❌ Failed to send payment receipt email: {str(e)}")
+            
             message = f'Investment marked as completed'
+
+
         #!    
         elif action == 'cancel':
             if investment.status in ['cancelled', 'completed']:

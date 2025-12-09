@@ -28,29 +28,35 @@ class InvestmentService:
         """
         amount = Decimal(str(amount))
         logger.info(f"📊 Creating investment: amount={amount}, units={units_count}, referral_code={referral_code}")
-        # 1. Check KYC
-        logger.info(f"🔍 Checking KYC for user: {user.username}")
-        logger.info(f"   hasattr(user, 'kyc'): {hasattr(user, 'kyc')}")
+        # # 1. Check KYC
+        # logger.info(f"🔍 Checking KYC for user: {user.username}")
+        # logger.info(f"   hasattr(user, 'kyc'): {hasattr(user, 'kyc')}")
         
-        if not hasattr(user, "kyc"):
-            logger.error(f"❌ User has no 'kyc' attribute!")
-            raise ValueError("KYC not found. Please complete KYC first.")
-        
-        try:
-            kyc = user.kyc
-            logger.info(f"   user.kyc exists: {kyc}")
-            logger.info(f"   user.kyc.status: {kyc.status}")
-            logger.info(f"   user.kyc_status: {user.kyc_status}")
+        # # if not hasattr(user, "kyc"):
+        # #     logger.error(f"❌ User has no 'kyc' attribute!")
+        # #     raise ValueError("KYC not found. Please complete KYC first.")
+        # if not hasattr(user, "kyc"):
+        #     logger.warning(f"⚠️ User has no KYC record - allowing investment without KYC")
+        # try:
+        #     kyc = user.kyc
+        #     logger.info(f"   user.kyc exists: {kyc}")
+        #     logger.info(f"   user.kyc.status: {kyc.status}")
+        #     logger.info(f"   user.kyc_status: {user.kyc_status}")
             
-            if kyc.status != "verified":
-                logger.error(f"❌ KYC status is '{kyc.status}', not 'verified'!")
-                raise ValueError(f"KYC status is '{kyc.status}'. Please complete KYC verification.")
+        #     # if kyc.status != "verified":
+        #     #     logger.error(f"❌ KYC status is '{kyc.status}', not 'verified'!")
+        #     #     raise ValueError(f"KYC status is '{kyc.status}'. Please complete KYC verification.")
+
+        #     if kyc.status != "verified":
+        #         logger.warning(f"⚠️ KYC status is '{kyc.status}' - allowing investment without verification")
+        #         # Continue with investment (remove the raise ValueError line)
+
             
-            logger.info(f"✅ KYC verified! Proceeding with investment...")
+            # logger.info(f"✅ KYC verified! Proceeding with investment...")
             
-        except Exception as e:
-            logger.error(f"❌ Error checking KYC: {str(e)}")
-            raise ValueError(f"KYC verification failed: {str(e)}")
+        # except Exception as e:
+        #     logger.error(f"❌ Error checking KYC: {str(e)}")
+        #     raise ValueError(f"KYC verification failed: {str(e)}")
 
         # 2. Check wallet balance (lock row)
         logger.info(f"💰 Checking wallet balance...")

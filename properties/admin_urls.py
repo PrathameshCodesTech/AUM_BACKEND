@@ -40,7 +40,7 @@ urlpatterns = [
     path('<int:property_id>/delete/', AdminPropertyDeleteView.as_view(), name='admin-property-delete'),
     path('<int:property_id>/action/', AdminPropertyActionView.as_view(), name='admin-property-action'),
     
-    # Image Management
+    # Image Managemeant
     path('<int:property_id>/images/', PropertyImageListView.as_view(), name='admin-property-images'),
     path('<int:property_id>/images/upload/', PropertyImageUploadView.as_view(), name='admin-property-image-upload'),
     path('<int:property_id>/images/<int:image_id>/', PropertyImageDeleteView.as_view(), name='admin-property-image-delete'),
