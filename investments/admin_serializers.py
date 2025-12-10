@@ -118,13 +118,14 @@ class AdminInvestmentDetailSerializer(serializers.ModelSerializer):
 class AdminInvestmentActionSerializer(serializers.Serializer):
     """Serializer for investment actions"""
     action = serializers.ChoiceField(
-        choices=['approve', 'reject', 'complete', 'cancel'],
+        choices=['approve', 'reject', 'complete', 'cancel','approve_payment',
+            'reject_payment',],
         required=True
     )
     rejection_reason = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Required if action is 'reject' or 'cancel'"
+        help_text="Required for reject_payment, reject, and cancel actions"
     )
     
     def validate(self, attrs):

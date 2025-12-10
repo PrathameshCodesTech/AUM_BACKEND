@@ -151,17 +151,24 @@ class AdminInvestmentDetailView(APIView):
                 'message': 'Investment not found'
             }, status=status.HTTP_404_NOT_FOUND)
 
-
 class AdminInvestmentActionView(APIView):
     """
     POST /api/admin/investments/{investment_id}/action/
     
-    Perform actions on investment (approve, reject, complete, cancel)
+    Perform actions on investment
+    
+    Actions:
+    - approve_payment: Approve payment (pending_payment → payment_approved)
+    - reject_payment: Reject payment (pending_payment → payment_rejected)
+    - approve: Approve investment (payment_approved → approved)
+    - reject: Reject investment
+    - complete: Mark payment as completed
+    - cancel: Cancel investment
     
     Body:
     {
-        "action": "approve",
-        "rejection_reason": "optional reason for reject/cancel"
+        "action": "approve_payment",
+        "rejection_reason": "optional reason for reject"
     }
     """
     permission_classes = [IsAuthenticated, IsAdmin]
@@ -186,13 +193,85 @@ class AdminInvestmentActionView(APIView):
         action = serializer.validated_data['action']
         reason = serializer.validated_data.get('rejection_reason', '')
         
-        # Perform action
-        # Perform action
-        if action == 'approve':
-            if investment.status != 'pending':
+        # ============================================
+        # 🆕 ACTION: APPROVE PAYMENT
+        # ============================================
+        if action == 'approve_payment':
+            if investment.status != 'pending_payment':
                 return Response({
                     'success': False,
-                    'message': f'Cannot approve investment with status: {investment.status}'
+                    'message': f'Cannot approve payment for investment with status: {investment.status}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Update payment status
+            investment.payment_status = 'VERIFIED'
+            investment.payment_approved_by = request.user
+            investment.payment_approved_at = timezone.now()
+            investment.status = 'payment_approved'
+            investment.save()
+            
+            logger.info(f"✅ Admin {request.user.username} approved payment for {investment.investment_id}")
+            
+            # ============================================
+            # 🆕 SEND PAYMENT APPROVED EMAIL
+            # ============================================
+            if investment.customer.email:
+                try:
+                    from accounts.services.email_service import send_dynamic_email
+                    from django.conf import settings
+                    
+                    customer_name = investment.customer.get_full_name() or investment.customer.username
+                    project_name = investment.property.name
+                    dashboard_link = f"{settings.FRONTEND_BASE_URL}/dashboard"
+                    support_email = getattr(settings, 'SUPPORT_EMAIL', 'support@aumcapital.com')
+                    
+                    send_dynamic_email(
+                        email_type='payment_approved',
+                        to=investment.customer.email,
+                        params={
+                            'name': customer_name,
+                            'project_name': project_name,
+                            'working_days': '7',
+                            'dashboard_link': dashboard_link,
+                            'support_email': support_email,
+                        }
+                    )
+                    
+                    logger.info(f"✅ Payment approved email sent to {investment.customer.email}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to send payment approved email: {str(e)}")
+            
+            message = 'Payment approved successfully. Investment ready for approval.'
+        
+        # ============================================
+        # 🆕 ACTION: REJECT PAYMENT
+        # ============================================
+        elif action == 'reject_payment':
+            if investment.status != 'pending_payment':
+                return Response({
+                    'success': False,
+                    'message': f'Cannot reject payment for investment with status: {investment.status}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            investment.payment_status = 'FAILED'
+            investment.payment_rejection_reason = reason
+            investment.status = 'payment_rejected'
+            investment.save()
+            
+            logger.info(f"✅ Admin {request.user.username} rejected payment for {investment.investment_id}")
+            
+            message = 'Payment rejected'
+        
+        # ============================================
+        # 🔧 ACTION: APPROVE INVESTMENT (updated)
+        # ============================================
+        elif action == 'approve':
+            # 🆕 NEW: Can only approve if payment is approved
+            if investment.status != 'payment_approved':
+                return Response({
+                    'success': False,
+                    'message': f'Cannot approve investment with status: {investment.status}. Payment must be approved first.'
                 }, status=status.HTTP_400_BAD_REQUEST)
             
             # Check if property has available units
@@ -206,14 +285,14 @@ class AdminInvestmentActionView(APIView):
             investment.approved_at = timezone.now()
             investment.approved_by = request.user
             
-            # Reduce available units in property
+            # 🆕 NOW deduct available units (delayed from creation)
             investment.property.available_units -= investment.units_purchased
             investment.property.save()
-
-
+            
+            logger.info(f"✅ Deducted {investment.units_purchased} units from property {investment.property.name}")
             
             # ============================================
-            # 🆕 SEND EOI APPROVED EMAIL
+            # SEND EOI APPROVED EMAIL
             # ============================================
             if investment.customer.email:
                 try:
@@ -234,45 +313,36 @@ class AdminInvestmentActionView(APIView):
                     logger.info(f"✅ EOI approved email sent to {investment.customer.email}")
                     
                 except Exception as e:
-                    # Don't fail approval if email fails
                     logger.error(f"❌ Failed to send EOI approval email: {str(e)}")
-    
-    # ============================================
-    # CALCULATE CP COMMISSION (existing code continues...)
-    # ============================================
             
             # ============================================
-            # CALCULATE CP COMMISSION (NEW)
-            # ============================================
-            # ============================================
-            # AUTO-APPROVE CP COMMISSION (FIXED)
+            # 🆕 NOW CALCULATE COMMISSION (delayed from creation)
             # ============================================
             try:
                 from commissions.services.commission_service import CommissionService
                 from commissions.models import Commission
                 
-                # Find existing commission (created during investment)
-                commission = Commission.objects.filter(
-                    investment=investment,
-                    status='pending',
-                    is_override=False
-                ).first()
+                # Calculate commission for the investment
+                commission = CommissionService.calculate_commission(investment)
                 
                 if commission:
-                    # Approve the existing commission
+                    # Auto-approve the commission
                     CommissionService.approve_commission(commission, request.user)
-                    logger.info(f"✅ Commission {commission.commission_id} auto-approved: ₹{commission.commission_amount}")
+                    logger.info(f"✅ Commission {commission.commission_id} calculated and approved: ₹{commission.commission_amount}")
                 else:
-                    logger.info(f"ℹ️ No pending commission found for investment {investment.investment_id}")
+                    logger.info(f"ℹ️ No commission calculated (no matching rule or no CP linked)")
                     
             except Exception as e:
-                logger.error(f"❌ Error approving commission: {e}")
-                # Don't fail approval if commission approval fails
+                logger.error(f"❌ Error calculating/approving commission: {e}")
+                # Don't fail approval if commission fails
             
-            message = f'Investment approved successfully'
-        #!    
+            message = 'Investment approved successfully'
+        
+        # ============================================
+        # ACTION: REJECT INVESTMENT
+        # ============================================
         elif action == 'reject':
-            if investment.status != 'pending':
+            if investment.status not in ['pending_payment', 'payment_approved']:
                 return Response({
                     'success': False,
                     'message': f'Cannot reject investment with status: {investment.status}'
@@ -282,9 +352,7 @@ class AdminInvestmentActionView(APIView):
             investment.rejection_reason = reason
             investment.approved_by = request.user
             
-            # ============================================
-            # CANCEL COMMISSION
-            # ============================================
+            # If there was a commission, cancel it
             try:
                 from commissions.models import Commission
                 
@@ -300,8 +368,11 @@ class AdminInvestmentActionView(APIView):
             except Exception as e:
                 logger.error(f"❌ Error cancelling commission: {e}")
             
-            message = f'Investment rejected'
-            
+            message = 'Investment rejected'
+        
+        # ============================================
+        # ACTION: COMPLETE (mark payment as completed)
+        # ============================================
         elif action == 'complete':
             if investment.status != 'approved':
                 return Response({
@@ -311,36 +382,12 @@ class AdminInvestmentActionView(APIView):
             
             investment.payment_completed = True
             investment.payment_completed_at = timezone.now()
-            if investment.customer.email:
-                try:
-                    from accounts.services.email_service import send_dynamic_email
-                    from django.conf import settings
-                    
-                    customer_name = investment.customer.get_full_name() or investment.customer.username
-                    project_name = investment.property.name
-                    dashboard_link = f"{settings.FRONTEND_BASE_URL}/dashboard"
-                    
-                    send_dynamic_email(
-                        email_type='payment_receipt',
-                        to=investment.customer.email,
-                        params={
-                            'name': customer_name,
-                            'project_name': project_name,
-                            'working_days': '7',  # Customize this as needed
-                            'dashboard_link': dashboard_link,
-                        }
-                    )
-                    
-                    logger.info(f"✅ Payment receipt email sent to {investment.customer.email}")
-                    
-                except Exception as e:
-                    # Don't fail completion if email fails
-                    logger.error(f"❌ Failed to send payment receipt email: {str(e)}")
             
-            message = f'Investment marked as completed'
-
-
-        #!    
+            message = 'Investment marked as completed'
+        
+        # ============================================
+        # ACTION: CANCEL
+        # ============================================
         elif action == 'cancel':
             if investment.status in ['cancelled', 'completed']:
                 return Response({
@@ -356,15 +403,13 @@ class AdminInvestmentActionView(APIView):
             investment.status = 'cancelled'
             investment.rejection_reason = reason
             
-            # ============================================
-            # CANCEL COMMISSION
-            # ============================================
+            # Cancel commission if exists
             try:
                 from commissions.models import Commission
                 
                 commission = Commission.objects.filter(
                     investment=investment,
-                    status__in=['pending', 'approved']  # Can cancel approved too
+                    status__in=['pending', 'approved']
                 ).first()
                 
                 if commission:
@@ -374,7 +419,13 @@ class AdminInvestmentActionView(APIView):
             except Exception as e:
                 logger.error(f"❌ Error cancelling commission: {e}")
             
-            message = f'Investment cancelled'
+            message = 'Investment cancelled'
+        
+        else:
+            return Response({
+                'success': False,
+                'message': f'Invalid action: {action}'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         investment.save()
         
@@ -408,7 +459,8 @@ class AdminInvestmentActionView(APIView):
             response_data['commission'] = commission_info
         
         return Response(response_data, status=status.HTTP_200_OK)
-
+    
+    
 
 class AdminInvestmentsByPropertyView(APIView):
     """

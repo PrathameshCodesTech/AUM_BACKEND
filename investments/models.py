@@ -139,6 +139,9 @@ class Investment(TimestampedModel, SoftDeleteModel):
     """Customer investment in property"""
 
     STATUS_CHOICES = [
+        ('pending_payment', 'Pending Payment Approval'),  # 🆕 NEW
+        ('payment_approved', 'Payment Approved'),  # 🆕 NEW
+        ('payment_rejected', 'Payment Rejected'),  # 🆕 NEW
         ('draft', 'Draft'),
         ('pending', 'Pending Approval'),
         ('approved', 'Approved'),
@@ -186,7 +189,7 @@ class Investment(TimestampedModel, SoftDeleteModel):
 
     # Status
     status = models.CharField(
-        max_length=20, choices=STATUS_CHOICES, default='draft')
+        max_length=20, choices=STATUS_CHOICES, default='pending_payment')
 
     # Approval
     approved_by = models.ForeignKey(
@@ -216,6 +219,136 @@ class Investment(TimestampedModel, SoftDeleteModel):
     # Notes
     notes = models.TextField(blank=True)
 
+
+     # Payment Method Choices
+    PAYMENT_METHOD_CHOICES = [
+        ('ONLINE', 'Online'),
+        ('POS', 'POS'),
+        ('DRAFT_CHEQUE', 'Draft / Cheque'),
+        ('NEFT_RTGS', 'NEFT / RTGS'),
+    ]
+    
+    # Payment Status Choices
+    PAYMENT_STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('VERIFIED', 'Verified'),
+        ('FAILED', 'Failed'),
+        ('REFUNDED', 'Refunded'),
+    ]
+    
+    # Core payment info
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+        blank=True,
+        help_text="Payment method used by customer"
+    )
+    
+    payment_status = models.CharField(
+        max_length=20,
+        choices=PAYMENT_STATUS_CHOICES,
+        default='PENDING',
+        help_text="Payment verification status"
+    )
+    
+    payment_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When payment was made by customer"
+    )
+    
+    payment_notes = models.TextField(
+        blank=True,
+        help_text="Customer notes about payment"
+    )
+    
+    # Payment approval
+    payment_approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payment_approved_investments',
+        help_text="Admin who approved the payment"
+    )
+    
+    payment_approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When payment was approved by admin"
+    )
+    
+    payment_rejection_reason = models.TextField(
+        blank=True,
+        help_text="Reason for payment rejection"
+    )
+    
+    # ONLINE / POS common fields
+    payment_mode = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="For ONLINE/POS: UPI, Card, NetBanking, Wallet, etc."
+    )
+    
+    transaction_no = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Payment gateway transaction ID / POS transaction no."
+    )
+    
+    # POS only
+    pos_slip_image = models.ImageField(
+        upload_to='investments/pos_slips/%Y/%m/',
+        null=True,
+        blank=True,
+        help_text="Image of POS charge slip"
+    )
+    
+    # DRAFT / CHEQUE fields
+    cheque_number = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Cheque/Draft number"
+    )
+    
+    cheque_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Cheque date"
+    )
+    
+    bank_name = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Bank name for cheque"
+    )
+    
+    ifsc_code = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Bank IFSC code"
+    )
+    
+    branch_name = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Bank branch name"
+    )
+    
+    cheque_image = models.ImageField(
+        upload_to='investments/cheques/%Y/%m/',
+        null=True,
+        blank=True,
+        help_text="Scanned cheque image"
+    )
+    
+    # NEFT / RTGS fields
+    neft_rtgs_ref_no = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="NEFT / RTGS reference number"
+    )
+
     class Meta:
         db_table = 'investments'
         indexes = [
@@ -225,6 +358,8 @@ class Investment(TimestampedModel, SoftDeleteModel):
             models.Index(fields=['referred_by_cp']),
             models.Index(fields=['referral_code_used']),
             models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['payment_method']),  # 🆕 NEW
+            models.Index(fields=['payment_status']),  # 🆕 NEW
         ]
         ordering = ['-created_at']
 

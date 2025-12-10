@@ -112,7 +112,7 @@ class TransactionHistoryView(APIView):
 class CreateInvestmentView(APIView):
     """
     POST /api/wallet/investments/create/
-    Create new investment
+    Create new investment WITH payment details (NO wallet)
     """
     permission_classes = [IsAuthenticated]
     
@@ -121,7 +121,8 @@ class CreateInvestmentView(APIView):
         logger = logging.getLogger(__name__)
         from partners.models import CPCustomerRelation
         
-        logger.info(f"📥 Received investment request: {request.data}")
+        logger.info(f"📥 Received investment request from: {request.user.username}")
+        logger.info(f"📥 Request data: {request.data}")
         
         # ============================================
         # VALIDATION: Check CP Relation Conflict
@@ -132,12 +133,9 @@ class CreateInvestmentView(APIView):
             is_expired=False
         ).first()
         
-        # Get referral_code from request
         referral_code = request.data.get('referral_code')
         
-        # If user has CP relation AND trying to use different code
         if existing_cp and referral_code:
-            # Check if referral code matches existing CP
             if referral_code != existing_cp.cp.cp_code:
                 logger.warning(f"❌ User {request.user.phone} already linked to {existing_cp.cp.cp_code}, tried to use {referral_code}")
                 return Response({
@@ -149,7 +147,7 @@ class CreateInvestmentView(APIView):
                 logger.info(f"✅ User using correct CP code: {referral_code}")
         
         # ============================================
-        # Continue with normal validation
+        # VALIDATE INPUT DATA
         # ============================================
         serializer = CreateInvestmentSerializer(data=request.data)
         
@@ -163,15 +161,42 @@ class CreateInvestmentView(APIView):
         try:
             logger.info(f"✅ Serializer valid, creating investment...")
             
+            # ============================================
+            # 🆕 PREPARE PAYMENT DATA FROM VALIDATED DATA
+            # ============================================
+            payment_data = {
+                'payment_method': serializer.validated_data.get('payment_method'),
+                'payment_date': serializer.validated_data.get('payment_date'),
+                'payment_notes': serializer.validated_data.get('payment_notes', ''),
+                'payment_mode': serializer.validated_data.get('payment_mode', ''),
+                'transaction_no': serializer.validated_data.get('transaction_no', ''),
+                'pos_slip_image': serializer.validated_data.get('pos_slip_image'),
+                'cheque_number': serializer.validated_data.get('cheque_number', ''),
+                'cheque_date': serializer.validated_data.get('cheque_date'),
+                'bank_name': serializer.validated_data.get('bank_name', ''),
+                'ifsc_code': serializer.validated_data.get('ifsc_code', ''),
+                'branch_name': serializer.validated_data.get('branch_name', ''),
+                'cheque_image': serializer.validated_data.get('cheque_image'),
+                'neft_rtgs_ref_no': serializer.validated_data.get('neft_rtgs_ref_no', ''),
+            }
+            
+            logger.info(f"💳 Payment method: {payment_data['payment_method']}")
+            
+            # ============================================
+            # CREATE INVESTMENT WITH PAYMENT DATA
+            # ============================================
             investment = InvestmentService.create_investment(
                 user=request.user,
                 property_obj=serializer.validated_data['property'],
                 amount=serializer.validated_data['amount'],
                 units_count=serializer.validated_data['units_count'],
-                referral_code=serializer.validated_data.get('referral_code')
+                referral_code=serializer.validated_data.get('referral_code'),
+                payment_data=payment_data  # 🆕 PASS PAYMENT DATA
             )
             
-            logger.info(f"✅ Investment service returned: {investment.investment_id}")
+            logger.info(f"✅ Investment created: {investment.investment_id}")
+            logger.info(f"   Status: {investment.status}")
+            logger.info(f"   Payment status: {investment.payment_status}")
             
             # Serialize the response
             investment_data = InvestmentSerializer(investment, context={'request': request}).data
@@ -180,7 +205,7 @@ class CreateInvestmentView(APIView):
             
             return Response({
                 'success': True,
-                'message': 'Investment created successfully. Pending admin approval.',
+                'message': 'Investment submitted successfully. Waiting for payment approval.',
                 'data': investment_data
             }, status=status.HTTP_201_CREATED)
             
@@ -193,7 +218,7 @@ class CreateInvestmentView(APIView):
                 'success': False,
                 'message': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
-
+        
 class MyInvestmentsView(APIView):
     """
     GET /api/wallet/investments/my-investments/

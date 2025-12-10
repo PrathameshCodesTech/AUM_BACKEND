@@ -236,7 +236,81 @@ Warm regards,
 Team AssetKart
 {website}
 """
-    }
+    },
+    'payment_approved': {
+        'subject': '✅ Payment Verified - {project_name}',
+        'html_body': """
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="color: white; margin: 0; font-size: 28px;">Payment Verified! ✅</h1>
+            </div>
+            
+            <div style="background-color: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <p style="font-size: 16px; color: #374151; margin-bottom: 20px;">
+                    Dear <strong>{name}</strong>,
+                </p>
+                
+                <p style="font-size: 16px; color: #374151; line-height: 1.6;">
+                    Great news! We have successfully verified your payment for <strong>{project_name}</strong>.
+                </p>
+                
+                <div style="background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 20px; margin: 25px 0; border-radius: 5px;">
+                    <h3 style="color: #065f46; margin-top: 0; margin-bottom: 10px;">What's Next?</h3>
+                    <p style="color: #047857; margin: 0; line-height: 1.6;">
+                        Your investment application is now under review by our team. You will receive another confirmation email once your Expression of Interest (EOI) is approved, typically within <strong>{working_days} working days</strong>.
+                    </p>
+                </div>
+                
+                <p style="font-size: 16px; color: #374151; line-height: 1.6;">
+                    You can track the status of your investment anytime through your dashboard.
+                </p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{dashboard_link}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 14px 35px; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                        View Dashboard
+                    </a>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+                
+                <p style="font-size: 14px; color: #6b7280; line-height: 1.6;">
+                    If you have any questions or concerns, please don't hesitate to reach out to our support team at <a href="mailto:{support_email}" style="color: #667eea;">{support_email}</a>
+                </p>
+                
+                <p style="font-size: 16px; color: #374151; margin-top: 25px;">
+                    Best regards,<br>
+                    <strong>The AUM Capital Team</strong>
+                </p>
+            </div>
+            
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #9ca3af;">
+                <p>© 2025 AUM Capital. All rights reserved.</p>
+                <p>This is an automated message, please do not reply to this email.</p>
+            </div>
+        </div>
+        """,
+        'text_body': """
+Dear {name},
+
+✅ Payment Verified!
+
+Great news! We have successfully verified your payment for {project_name}.
+
+WHAT'S NEXT?
+Your investment application is now under review by our team. You will receive another confirmation email once your Expression of Interest (EOI) is approved, typically within {working_days} working days.
+
+You can track the status of your investment anytime through your dashboard: {dashboard_link}
+
+If you have any questions or concerns, please reach out to our support team at {support_email}
+
+Best regards,
+The AUM Capital Team
+
+---
+© 2025 AUM Capital. All rights reserved.
+This is an automated message, please do not reply to this email.
+        """
+    },
 
 }
 

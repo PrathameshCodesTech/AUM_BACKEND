@@ -178,6 +178,27 @@ class InvestmentSerializer(serializers.ModelSerializer):
         read_only=True
     )
     
+    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
+    property = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    # 🆕 ADD PAYMENT DISPLAY FIELDS
+    payment_method_display = serializers.CharField(
+        source='get_payment_method_display',
+        read_only=True
+    )
+    payment_status_display = serializers.CharField(
+        source='get_payment_status_display',
+        read_only=True
+    )
+    
+    # 🆕 ADD PAYMENT APPROVAL INFO
+    payment_approved_by_name = serializers.CharField(
+        source='payment_approved_by.get_full_name',
+        read_only=True,
+        allow_null=True
+    )
+
     class Meta:
         model = Investment
         fields = [
@@ -185,30 +206,59 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'investment_id',
             'customer',
             'customer_name',
-            'property',  # SerializerMethodField
+            'property',
             'referred_by_cp',
             'cp_name',
-            'cp_code',  # NEW
-            'referral_code',  # NEW - shows code entered at investment
+            'cp_code',
+            'referral_code',
             'amount',
-            'units_purchased',  # Real field
-            'units_count',      # Alias → units_purchased
+            'units_purchased',
+            'units_count',
             'price_per_unit_at_investment',
             'status',
             'status_display',
-            'expected_return_amount',  # Real field
-            'expected_return',         # Alias → expected_return_amount
-            'actual_return_amount',    # Real field
-            'actual_return',           # Alias → actual_return_amount
-            'investment_date',  # Real field
-            'invested_at',      # Alias → investment_date
+            'expected_return_amount',
+            'expected_return',
+            'actual_return_amount',
+            'actual_return',
+            'investment_date',
+            'invested_at',
             'maturity_date',
+            
+            # 🆕 PAYMENT FIELDS
+            'payment_method',
+            'payment_method_display',
+            'payment_status',
+            'payment_status_display',
+            'payment_date',
+            'payment_notes',
+            'payment_approved_by',
+            'payment_approved_by_name',
+            'payment_approved_at',
+            'payment_rejection_reason',
+            
+            # Payment method specific fields
+            'payment_mode',
+            'transaction_no',
+            'pos_slip_image',
+            'cheque_number',
+            'cheque_date',
+            'bank_name',
+            'ifsc_code',
+            'branch_name',
+            'cheque_image',
+            'neft_rtgs_ref_no',
+            
             'created_at',
             'updated_at'
         ]
         read_only_fields = [
             'investment_id',
             'investment_date',
+            'payment_status',
+            'payment_approved_by',
+            'payment_approved_at',
+            'payment_rejection_reason',
             'created_at',
             'updated_at'
         ]
@@ -258,8 +308,9 @@ class InvestmentSerializer(serializers.ModelSerializer):
 
 
 class CreateInvestmentSerializer(serializers.Serializer):
-    """Serializer for creating new investment"""
+    """Serializer for creating new investment WITH payment details"""
     
+    # Investment details
     property_id = serializers.IntegerField(required=True)
     amount = serializers.DecimalField(max_digits=15, decimal_places=2, required=True)
     units_count = serializers.IntegerField(required=True, min_value=1)
@@ -267,7 +318,88 @@ class CreateInvestmentSerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
         max_length=50,
-        help_text="Optional CP referral code (overrides pre-linked CP)"
+        help_text="Optional CP referral code"
+    )
+    
+    # 🆕 PAYMENT DETAILS (required)
+    payment_method = serializers.ChoiceField(
+        choices=['ONLINE', 'POS', 'DRAFT_CHEQUE', 'NEFT_RTGS'],
+        required=True,
+        help_text="Payment method used"
+    )
+    
+    payment_date = serializers.DateTimeField(
+        required=True,
+        help_text="When payment was made"
+    )
+    
+    payment_notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Additional payment notes"
+    )
+    
+    # 🆕 ONLINE / POS fields (conditional)
+    payment_mode = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="UPI, Card, NetBanking, etc."
+    )
+    
+    transaction_no = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Transaction ID / Reference number"
+    )
+    
+    pos_slip_image = serializers.ImageField(
+        required=False,
+        allow_null=True,
+        help_text="POS slip image"
+    )
+    
+    # 🆕 CHEQUE fields (conditional)
+    cheque_number = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Cheque number"
+    )
+    
+    cheque_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        help_text="Cheque date"
+    )
+    
+    bank_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Bank name"
+    )
+    
+    ifsc_code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="IFSC code"
+    )
+    
+    branch_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Branch name"
+    )
+    
+    cheque_image = serializers.ImageField(
+        required=False,
+        allow_null=True,
+        help_text="Cheque image"
+    )
+    
+    # 🆕 NEFT / RTGS fields (conditional)
+    neft_rtgs_ref_no = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="NEFT/RTGS reference number"
     )
     
     def validate_amount(self, value):
@@ -287,7 +419,7 @@ class CreateInvestmentSerializer(serializers.Serializer):
             )
         except Property.DoesNotExist:
             raise serializers.ValidationError({
-                'non_field_errors': ['Property not found or not available for investment']
+                'property_id': 'Property not found or not available for investment'
             })
         
         # Check minimum investment
@@ -302,7 +434,7 @@ class CreateInvestmentSerializer(serializers.Serializer):
                 'amount': f"Maximum investment is ₹{property_obj.maximum_investment:,.2f}"
             })
         
-        # Check units available
+        # Check units available (don't deduct yet, just validate)
         if data['units_count'] > property_obj.available_units:
             raise serializers.ValidationError({
                 'units_count': f"Only {property_obj.available_units} units available"
@@ -316,6 +448,45 @@ class CreateInvestmentSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'amount': f"Amount should be ₹{expected_amount:,.2f} for {data['units_count']} units"
             })
+        
+        # ============================================
+        # 🆕 PAYMENT METHOD VALIDATION
+        # ============================================
+        payment_method = data.get('payment_method')
+        
+        # ONLINE / POS validation
+        if payment_method in ['ONLINE', 'POS']:
+            if not data.get('transaction_no'):
+                raise serializers.ValidationError({
+                    'transaction_no': 'Transaction number is required for ONLINE/POS payments'
+                })
+        
+        # DRAFT_CHEQUE validation
+        if payment_method == 'DRAFT_CHEQUE':
+            missing = []
+            if not data.get('cheque_number'):
+                missing.append('cheque_number')
+            if not data.get('cheque_date'):
+                missing.append('cheque_date')
+            if not data.get('bank_name'):
+                missing.append('bank_name')
+            if not data.get('ifsc_code'):
+                missing.append('ifsc_code')
+            if not data.get('branch_name'):
+                missing.append('branch_name')
+            
+            if missing:
+                raise serializers.ValidationError({
+                    field: f'{field.replace("_", " ").title()} is required for cheque payment'
+                    for field in missing
+                })
+        
+        # NEFT_RTGS validation
+        if payment_method == 'NEFT_RTGS':
+            if not data.get('neft_rtgs_ref_no'):
+                raise serializers.ValidationError({
+                    'neft_rtgs_ref_no': 'NEFT/RTGS reference number is required'
+                })
         
         # Store property object for later use
         data['property'] = property_obj
