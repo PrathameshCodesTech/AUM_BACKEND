@@ -190,6 +190,9 @@ class AdminInvestmentActionView(APIView):
                 'errors': serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
+        print("Initial data:", serializer.initial_data)
+        print("Validated data:", serializer.validated_data)
+
         action = serializer.validated_data['action']
         reason = serializer.validated_data.get('rejection_reason', '')
         
@@ -223,7 +226,7 @@ class AdminInvestmentActionView(APIView):
                     customer_name = investment.customer.get_full_name() or investment.customer.username
                     project_name = investment.property.name
                     dashboard_link = f"{settings.FRONTEND_BASE_URL}/dashboard"
-                    support_email = getattr(settings, 'SUPPORT_EMAIL', 'support@aumcapital.com')
+                    support_email = getattr(settings, 'SUPPORT_EMAIL', 'invest@assetkart.com')
                     
                     send_dynamic_email(
                         email_type='payment_approved',
@@ -507,15 +510,109 @@ class AdminInvestmentsByCustomerView(APIView):
     """
     permission_classes = [IsAuthenticated, IsAdmin]
     
+    # def get(self, request, customer_id):
+    #     try:
+    #         from django.contrib.auth import get_user_model
+    #         from decimal import Decimal
+
+
+
+    #         User = get_user_model()
+    #         customer = User.objects.get(id=customer_id)
+            
+    #         investments = Investment.objects.filter(
+    #             customer=customer
+    #         ).select_related('property').order_by('-created_at')
+
+    #           # 🆕 Calculate payment statistics
+    #         total_investments = investments.count()
+            
+    #         # Total investment amount (sum of minimum_required_amount)
+    #         total_amount = investments.aggregate(
+    #             total=Sum('minimum_required_amount')
+    #         )['total'] or Decimal('0')
+            
+    #         # 🆕 Total paid amount
+    #         total_paid_amount = investments.aggregate(
+    #             total=Sum('amount')
+    #         )['total'] or Decimal('0')
+            
+    #         # 🆕 Total due amount (only from partial payments)
+    #         total_due_amount = investments.filter(
+    #             is_partial_payment=True
+    #         ).aggregate(
+    #             total=Sum('due_amount')
+    #         )['total'] or Decimal('0')
+            
+    #         serializer = AdminInvestmentListSerializer(investments, many=True)
+            
+    #         return Response({
+    #             'success': True,
+    #             'customer': {
+    #                 'id': customer.id,
+    #                 'username': customer.username,
+    #                 'email': customer.email,
+    #                 'phone': customer.phone,
+    #             },
+    #             'total_investments': investments.count(),
+    #              # 🆕 Payment breakdown
+    #             'total_amount': str(total_amount),           # Total investment value
+    #             'total_paid_amount': str(total_paid_amount), # Amount paid so far
+    #             'total_due_amount': str(total_due_amount),   # Amount still due
+    #             'data': serializer.data
+    #         }, status=status.HTTP_200_OK)
+            
+    #     except User.DoesNotExist:
+    #         return Response({
+    #             'success': False,
+    #             'message': 'Customer not found'
+    #         }, status=status.HTTP_404_NOT_FOUND)
     def get(self, request, customer_id):
         try:
             from django.contrib.auth import get_user_model
+            from decimal import Decimal
+
             User = get_user_model()
             customer = User.objects.get(id=customer_id)
             
             investments = Investment.objects.filter(
                 customer=customer
             ).select_related('property').order_by('-created_at')
+
+            total_investments = investments.count()
+            
+            # ✅ CORRECTED CALCULATIONS
+            # Total Investment Amount = Sum of all minimum_required_amount (total commitments)
+            total_amount = investments.aggregate(
+                total=Sum('minimum_required_amount')
+            )['total'] or Decimal('0')
+            
+            # ✅ Total Paid Amount = Sum of actual payments made (amount field)
+            total_paid_amount = investments.aggregate(
+                total=Sum('amount')
+            )['total'] or Decimal('0')
+            
+            # ✅ Total Due Amount = Total commitment - Total paid
+            total_due_amount = total_amount - total_paid_amount
+            
+            # ✅ DEBUGGING: Print values to see what's happening
+            print(f"""
+            📊 Customer Investment Summary for {customer.username}:
+            - Total Investments: {total_investments}
+            - Total Commitment (minimum_required_amount): ₹{total_amount}
+            - Total Paid (amount): ₹{total_paid_amount}
+            - Total Due: ₹{total_due_amount}
+            """)
+            
+            # ✅ Also print individual investment details
+            for inv in investments:
+                print(f"""
+                Investment {inv.investment_id}:
+                - minimum_required_amount: ₹{inv.minimum_required_amount}
+                - amount (paid): ₹{inv.amount}
+                - due_amount: ₹{inv.due_amount}
+                - is_partial_payment: {inv.is_partial_payment}
+                """)
             
             serializer = AdminInvestmentListSerializer(investments, many=True)
             
@@ -527,13 +624,382 @@ class AdminInvestmentsByCustomerView(APIView):
                     'email': customer.email,
                     'phone': customer.phone,
                 },
-                'total_investments': investments.count(),
-                'total_amount': str(investments.aggregate(total=Sum('amount'))['total'] or 0),
+                'total_investments': total_investments,
+                'total_amount': str(total_amount),
+                'total_paid_amount': str(total_paid_amount),
+                'total_due_amount': str(total_due_amount),
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
-            
+        
         except User.DoesNotExist:
             return Response({
                 'success': False,
                 'message': 'Customer not found'
             }, status=status.HTTP_404_NOT_FOUND)
+
+
+import logging
+from django.utils import timezone
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from rest_framework import status
+
+from partners.models import CPCustomerRelation
+from .models import Investment
+# ✅ Explicit import from admin_serializers
+from investments.admin_serializers import CreateInvestmentSerializer
+from .serializers import InvestmentSerializer
+from .services.investment_service import InvestmentService
+
+
+class CreateInvestmentView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        logger = logging.getLogger(__name__)
+
+        # Properly flatten QueryDict values
+        data = {}
+        for key in request.data.keys():
+            values = request.data.getlist(key)
+            if values:
+                data[key] = values[0]   # take the first value only
+
+        serializer = CreateInvestmentSerializer(data=data)
+
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Debugging
+        print("Initial data:", serializer.initial_data)
+        print("Validated data:", serializer.validated_data)
+
+        customer = serializer.validated_data.get('customer_id')
+        property_obj = serializer.validated_data.get('property_id')
+        referral_code = serializer.validated_data.get('referral_code')
+
+        if not customer or not property_obj:
+            return Response({
+                'success': False,
+                'message': 'customer_id or property_id missing after validation'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # CP conflict check
+        existing_cp = CPCustomerRelation.objects.filter(
+            customer=customer,
+            is_active=True,
+            is_expired=False
+        ).first()
+        if existing_cp and referral_code and referral_code != existing_cp.cp.cp_code:
+            return Response({
+                'success': False,
+                'message': f'Customer already linked to {existing_cp.cp.cp_code}. Cannot use {referral_code}.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # payment_data = {k: serializer.validated_data.get(k) for k in [
+        #     'payment_method', 'payment_date', 'payment_notes', 'payment_mode', 'transaction_no',
+        #     'pos_slip_image', 'cheque_number', 'cheque_date', 'bank_name', 'ifsc_code',
+        #     'branch_name', 'cheque_image', 'neft_rtgs_ref_no'
+        # ]}
+        payment_data = {
+            'payment_method': serializer.validated_data.get('payment_method'),
+            'payment_date': serializer.validated_data.get('payment_date'),
+            'payment_notes': serializer.validated_data.get('payment_notes', ''),
+            'payment_mode': serializer.validated_data.get('payment_mode', ''),
+            'transaction_no': serializer.validated_data.get('transaction_no', ''),
+            'pos_slip_image': serializer.validated_data.get('pos_slip_image'),
+            'cheque_number': serializer.validated_data.get('cheque_number', ''),
+            'cheque_date': serializer.validated_data.get('cheque_date'),
+            'bank_name': serializer.validated_data.get('bank_name', ''),
+            'ifsc_code': serializer.validated_data.get('ifsc_code', ''),
+            'branch_name': serializer.validated_data.get('branch_name', ''),
+            'cheque_image': serializer.validated_data.get('cheque_image'),
+            'neft_rtgs_ref_no': serializer.validated_data.get('neft_rtgs_ref_no', ''),
+        }
+
+        try:
+            investment = InvestmentService.create_investment(
+                user=customer,
+                # created_by=request.user,
+                property_obj=property_obj,
+                amount=serializer.validated_data['paid_amount'],
+                units_count=serializer.validated_data['units_count'],
+                referral_code=referral_code,
+                payment_data=payment_data,
+                 # 🆕 NEW PARAMETERS
+                commitment_amount=serializer.validated_data.get('commitment_amount'),
+                payment_due_date=serializer.validated_data.get('payment_due_date'),
+            )
+
+            logger.info(f"✅ Investment created by admin: {investment.investment_id}")
+            logger.info(f"   Commitment: ₹{investment.minimum_required_amount}")
+            logger.info(f"   Paid: ₹{investment.amount}")
+            logger.info(f"   Due: ₹{investment.due_amount}")
+            logger.info(f"   Due Date: {investment.payment_due_date}")
+
+            # Set created_by after service returns
+            # investment.created_by = request.user
+            # investment.save(update_fields=['created_by'])
+
+            # AUTO APPROVAL
+            # now = timezone.now()
+            # investment.status = 'approved'
+            # investment.approved_by = request.user
+            # investment.approved_at = now
+            # investment.payment_status = 'VERIFIED'
+            # investment.payment_approved_by = request.user
+            # investment.payment_approved_at = now
+            # investment.payment_completed = True
+            # investment.payment_completed_at = now
+
+            # investment.save(update_fields=[
+            #     'status', 'approved_by', 'approved_at', 'payment_status',
+            #     'payment_approved_by', 'payment_approved_at', 'payment_completed',
+            #     'payment_completed_at'
+            # ])
+
+            return Response({
+                'success': True,
+                'message': 'Investment created successfully.',
+                'data': InvestmentSerializer(investment, context={'request': request}).data
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.exception("Investment creation failed")
+            return Response({'success': False, 'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+"""
+Add these views to your existing investments/admin_views.py file
+"""
+
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework import status
+# from rest_framework.permissions import IsAuthenticated
+from django.http import HttpResponse
+from django.db.models import Q
+from accounts.permissions import IsAdmin
+from .models import Investment
+from .admin_serializers import AdminInvestmentListSerializer
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class AdminInvestmentReceiptsView(APIView):
+    """
+    GET /api/admin/investments/receipts/
+    Get all approved investments (receipts) with filters
+    
+    Query params:
+    - search: Search by customer name, phone, receipt number
+    - customer: Filter by customer ID
+    - property: Filter by property ID
+    - date_from: Filter from date (YYYY-MM-DD)
+    - date_to: Filter to date (YYYY-MM-DD)
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    def get(self, request):
+        try:
+            # Get only approved investments (these are receipts)
+            queryset = Investment.objects.filter(
+                status='approved'
+            ).select_related('customer', 'property').order_by('-approved_at')
+            
+            # Search
+            search = request.query_params.get('search')
+            if search:
+                queryset = queryset.filter(
+                    Q(customer__username__icontains=search) |
+                    Q(customer__phone__icontains=search) |
+                    Q(customer__email__icontains=search) |
+                    Q(investment_id__icontains=search)
+                )
+            
+            # Filter by customer
+            customer_id = request.query_params.get('customer')
+            if customer_id:
+                queryset = queryset.filter(customer_id=customer_id)
+            
+            # Filter by property
+            property_id = request.query_params.get('property')
+            if property_id:
+                queryset = queryset.filter(property_id=property_id)
+            
+            # Filter by date range
+            date_from = request.query_params.get('date_from')
+            date_to = request.query_params.get('date_to')
+            if date_from:
+                queryset = queryset.filter(approved_at__gte=date_from)
+            if date_to:
+                queryset = queryset.filter(approved_at__lte=date_to)
+            
+            serializer = AdminInvestmentListSerializer(queryset, many=True)
+            
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'count': queryset.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching receipts: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to fetch receipts: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AdminDownloadReceiptView(APIView):
+    """
+    GET /api/admin/investments/{investment_id}/receipt/download/
+    Download receipt PDF for any approved investment
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    def get(self, request, investment_id):
+        try:
+            investment = Investment.objects.select_related('property', 'customer').get(
+                id=investment_id,
+                status='approved'
+            )
+            
+            # Generate PDF receipt in requested layout
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import mm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from io import BytesIO
+            from datetime import datetime
+
+            def amount_to_words(num):
+                num = int(round(float(num)))
+                ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+                        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+                        "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+                tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+                scales = [(10000000, "Crore"), (100000, "Lakh"), (1000, "Thousand"), (100, "Hundred")]
+                words = []
+                n = num
+                for value, name in scales:
+                    if n >= value:
+                        count = n // value
+                        n = n % value
+                        if count >= 20:
+                            words.append(tens[count // 10])
+                            if count % 10:
+                                words.append(ones[count % 10])
+                        else:
+                            words.append(ones[count])
+                        words.append(name)
+                if n >= 20:
+                    words.append(tens[n // 10])
+                    if n % 10:
+                        words.append(ones[n % 10])
+                elif n > 0:
+                    words.append(ones[n])
+                return " ".join([w for w in words if w]) or "Zero"
+
+            payer_name = investment.customer.get_full_name() or investment.customer.username
+            amount_fig = f"₹{investment.amount:,.2f}"
+            amount_words = f"Rupees {amount_to_words(investment.amount)} only"
+            payment_mode = investment.get_payment_method_display() if investment.payment_method else "N/A"
+            txn_ref = investment.transaction_no or "N/A"
+            bank_name = investment.bank_name or "N/A"
+            paid_date = investment.payment_date.date() if getattr(investment, "payment_date", None) else investment.approved_at.date() if investment.approved_at else datetime.now().date()
+            receipt_date = investment.approved_at.date() if investment.approved_at else datetime.now().date()
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm)
+            styles = getSampleStyleSheet()
+            normal = ParagraphStyle('normal', parent=styles['Normal'], fontSize=11, leading=14)
+            title = ParagraphStyle('title', parent=styles['Heading1'], alignment=TA_CENTER, textColor=colors.black, fontSize=18, spaceAfter=12)
+            label_style = ParagraphStyle('label', parent=normal, fontName='Helvetica-Bold')
+            value_style = ParagraphStyle('value', parent=normal)
+
+            elements = []
+            elements.append(Paragraph("PAYMENT RECEIPT", title))
+            elements.append(Spacer(1, 6*mm))
+
+            header_table = Table([
+                [Paragraph("Receipt No.:", label_style), Paragraph(str(investment.investment_id), value_style),
+                 Paragraph("Date:", label_style), Paragraph(receipt_date.strftime('%d-%m-%Y'), value_style)],
+            ], colWidths=[28*mm, 55*mm, 18*mm, 32*mm])
+            header_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(header_table)
+            elements.append(Spacer(1, 4*mm))
+
+            body_rows = [
+                ("Received with thanks from", f"Mr./Ms. {payer_name}"),
+                ("Amount (figures)", amount_fig),
+                ("Amount (words)", amount_words),
+                ("Towards", "Investment"),
+                ("Project Name", investment.property.name),
+            ]
+            body_table = Table([[Paragraph(f"{k}:", label_style), Paragraph(v, value_style)] for k,v in body_rows],
+                               colWidths=[45*mm, 98*mm])
+            body_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(body_table)
+            elements.append(Spacer(1, 6*mm))
+
+            pay_rows = [
+                ("Mode of Payment", payment_mode),
+                ("Transaction / Reference No.", txn_ref),
+                ("Dated", paid_date.strftime('%d-%m-%Y')),
+                ("Bank", bank_name),
+            ]
+            pay_table = Table([[Paragraph(f"{k}:", label_style), Paragraph(v, value_style)] for k,v in pay_rows],
+                              colWidths=[45*mm, 98*mm])
+            pay_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(pay_table)
+            elements.append(Spacer(1, 12*mm))
+
+            elements.append(Paragraph("This receipt is issued as an acknowledgement of payment received.", normal))
+            elements.append(Spacer(1, 14*mm))
+
+            elements.append(Paragraph("For AssetKart", normal))
+            elements.append(Spacer(1, 12*mm))
+            elements.append(Paragraph("Authorized Signatory", normal))
+            elements.append(Paragraph("Name: ________________________________", normal))
+            elements.append(Paragraph("Designation: __________________________", normal))
+            elements.append(Spacer(1, 12*mm))
+            elements.append(Paragraph("Powered by AssetKart", ParagraphStyle('center', parent=normal, alignment=TA_CENTER)))
+
+            doc.build(elements)
+            
+            # Return PDF
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="receipt-{investment.investment_id}.pdf"'
+            
+            return response
+            
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Receipt not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"❌ Error generating receipt: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to generate receipt: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)      
+
+
+

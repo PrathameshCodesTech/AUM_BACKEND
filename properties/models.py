@@ -69,17 +69,17 @@ class Property(TimestampedModel, SoftDeleteModel):
         max_digits=15, decimal_places=2, default=Decimal('0.00'))
 
     # Returns
-    expected_return_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True, 
+    expected_return_percentage = models.CharField(
+        null=True, blank=True, max_length=5,
         help_text="Target IRR %")
     gross_yield = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True,
         help_text="Gross Yield %")
-    potential_gain = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
+    potential_gain = models.CharField(
+        null=True, blank=True,max_length=30,
         help_text="Potential Gain %")
-    expected_return_period = models.IntegerField(
-        help_text="in months", null=True, blank=True)
+    expected_return_period = models.CharField(
+        help_text="in months",max_length=12, null=True, blank=True)
 
     # Tenure
     lock_in_period = models.IntegerField(help_text="in months", default=0)

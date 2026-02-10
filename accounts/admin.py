@@ -5,7 +5,12 @@ from django.contrib.auth.models import Group
 from django.utils.html import format_html
 from django.utils import timezone
 from django.db.models import Q
+from django.core.mail import send_mail
+from django.conf import settings
+import logging
 from .models import User, Role, Permission, RolePermission
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -255,6 +260,39 @@ class UserAdmin(BaseUserAdmin):
         updated = queryset.update(is_active=False)
         self.message_user(request, f'{updated} user(s) deactivated.')
     deactivate_users.short_description = 'Deactivate selected users'
+
+    def save_model(self, request, obj, form, change):
+        """Send welcome email on admin-created users"""
+        is_new = obj.pk is None
+        super().save_model(request, obj, form, change)
+
+        if is_new and obj.email:
+            try:
+                name = obj.first_name or obj.username
+                phone = obj.phone or ''
+                subject = "Your AssetKart account is ready"
+                body = (
+                    f"Hi {name},\n\n"
+                    "We've created your AssetKart account.\n\n"
+                    "Login steps:\n"
+                    "1) Go to https://app.assetkart.com (or the mobile app)\n"
+                    f"2) Enter your phone number {phone}\n"
+                    "3) Use the OTP you receive to sign in\n\n"
+                    "Once inside, you can complete your profile and start exploring opportunities.\n\n"
+                    "If you need help, email us at invest@assetkart.com.\n\n"
+                    "Best regards,\n"
+                    "AssetKart Team"
+                )
+                send_mail(
+                    subject=subject,
+                    message=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[obj.email],
+                    fail_silently=False,
+                )
+                logger.info("Welcome email sent to %s for admin-created user %s", obj.email, obj.pk)
+            except Exception as exc:
+                logger.error("Failed to send admin-created user email for user %s: %s", obj.pk, exc, exc_info=True)
 
 
 # ============================================

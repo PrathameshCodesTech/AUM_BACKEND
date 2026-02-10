@@ -24,7 +24,7 @@ urlpatterns = [
     # ============================================
     path('api/cp/', include('partners.urls')),  # CP-facing APIs
     path('api/admin/cp/', include('partners.admin_urls')),  # Admin CP management
-    
+    path('api/cp/commissions/', include('commissions.cp_urls')),  # 🆕 CP Commission APIs    
     # ============================================
     # ADMIN ROUTES (EXISTING)
     # ============================================
@@ -32,7 +32,8 @@ urlpatterns = [
     path('api/admin/kyc/', include('compliance.admin_urls')),
     path('api/admin/properties/', include('properties.admin_urls')),
     path('api/admin/investments/', include('investments.admin_urls')),
-    path('api/', include('commissions.urls')),
+    #path('api/', include('commissions.urls')),
+ path('api/admin/commissions/', include('commissions.urls')),
 ]
 
 if settings.DEBUG:

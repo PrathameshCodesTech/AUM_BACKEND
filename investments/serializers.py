@@ -199,6 +199,25 @@ class InvestmentSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+        # 🆕 Receipt-specific fields
+    receipt_number = serializers.CharField(source='investment_id', read_only=True)
+    receipt_date = serializers.DateTimeField(source='approved_at', read_only=True)
+    transaction_id = serializers.CharField(source='transaction_no', read_only=True)
+
+        # 🆕 Partial Payment Fields
+    is_partial_payment = serializers.BooleanField(read_only=True)
+    minimum_required_amount = serializers.DecimalField(
+        max_digits=15, 
+        decimal_places=2, 
+        read_only=True
+    )
+    due_amount = serializers.DecimalField(
+        max_digits=15, 
+        decimal_places=2, 
+        read_only=True
+    )
+    payment_due_date = serializers.DateField(read_only=True)
+
     class Meta:
         model = Investment
         fields = [
@@ -248,9 +267,20 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'branch_name',
             'cheque_image',
             'neft_rtgs_ref_no',
+
+              # 🆕 Receipt fields
+            'receipt_number',
+            'receipt_date',
+            'transaction_id',
             
             'created_at',
-            'updated_at'
+            'updated_at',
+
+              # 🆕 Add these to fields list
+            'is_partial_payment',
+            'minimum_required_amount',
+            'due_amount',
+            'payment_due_date',
         ]
         read_only_fields = [
             'investment_id',
@@ -295,6 +325,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'state': getattr(property_obj, 'state', ''),
             'price_per_unit': str(getattr(property_obj, 'price_per_unit', 0)),
             'minimum_investment': str(getattr(property_obj, 'minimum_investment', 0)),
+            'maximum_investment': str(getattr(property_obj, 'maximum_investment', 0)),
             'expected_return_percentage': str(getattr(property_obj, 'expected_return_percentage', 0)),
             'gross_yield': str(getattr(property_obj, 'gross_yield', 0)),
             'potential_gain': str(getattr(property_obj, 'potential_gain', 0)),
@@ -319,6 +350,14 @@ class CreateInvestmentSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=50,
         help_text="Optional CP referral code"
+    )
+        # 🆕 ADD THESE FIELDS
+    commitment_amount = serializers.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        help_text="Total investment commitment (if different from amount)"
     )
     
     # 🆕 PAYMENT DETAILS (required)
@@ -409,8 +448,17 @@ class CreateInvestmentSerializer(serializers.Serializer):
     
     def validate(self, data):
         """Cross-field validation"""
-        
-        # Check if property exists and is available for investment
+
+        from decimal import Decimal
+        from properties.models import Property
+        from django.utils import timezone
+
+
+        property_obj = data['property_id']
+        units_count = data['units_count']
+        amount = Decimal(str(data['amount']))
+
+        # ✅ FETCH PROPERTY OBJECT
         try:
             property_obj = Property.objects.get(
                 id=data['property_id'],
@@ -421,33 +469,113 @@ class CreateInvestmentSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'property_id': 'Property not found or not available for investment'
             })
+
+        # ✅ SAFE DECIMAL CALCULATION
+        price_per_unit = Decimal(str(property_obj.price_per_unit))
+        expected_amount = price_per_unit * Decimal(units_count)
+        
+        
+        # expected_amount = Decimal(property_obj.price_per_unit) * units_count
+        
+        # 🆕 If commitment_amount provided, use it
+        commitment = data.get('commitment_amount')
+        if commitment:
+            commitment = Decimal(str(commitment))
+            if amount > commitment:
+                raise serializers.ValidationError({
+                    'amount': f"Paid amount cannot exceed commitment amount"
+                })
+        else:
+            # Use expected amount as commitment
+            data['commitment_amount'] = expected_amount
+        
+        # 🆕 Check if partial payment
+        total_required = data.get('commitment_amount', expected_amount)
+        if amount < total_required:
+            data['is_partial_payment'] = True
+            
+            # Require due date for partial payments
+            if not data.get('payment_due_date'):
+                from datetime import timedelta
+                data['payment_due_date'] = timezone.now().date() + timedelta(days=30)
+
+            # ✅ FIX: Convert amount to Decimal properly
+        # try:
+        #     amount = Decimal(str(data['amount']))
+        # except (ValueError, TypeError) as e:
+        #     raise serializers.ValidationError({
+        #         'amount': f'Invalid amount format: {str(e)}'
+        #     })
+        
+        # # Check if property exists and is available for investment
+        # try:
+        #     property_obj = Property.objects.get(
+        #         id=data['property_id'],
+        #         status__in=['live', 'funding'],
+        #         is_published=True
+        #     )
+        # except Property.DoesNotExist:
+        #     raise serializers.ValidationError({
+        #         'property_id': 'Property not found or not available for investment'
+        #     })
+        
+            # ✅ FIX: Convert property limits to Decimal for comparison
+        # min_investment = Decimal(str(property_obj.minimum_investment))
         
         # Check minimum investment
-        if data['amount'] < property_obj.minimum_investment:
-            raise serializers.ValidationError({
-                'amount': f"Minimum investment is ₹{property_obj.minimum_investment:,.2f}"
-            })
+        # if amount < min_investment:
+        #     raise serializers.ValidationError({
+        #         'amount': f"Minimum investment is ₹{min_investment:,.2f}"
+        #     })
         
         # Check maximum investment if set
-        if property_obj.maximum_investment and data['amount'] > property_obj.maximum_investment:
-            raise serializers.ValidationError({
-                'amount': f"Maximum investment is ₹{property_obj.maximum_investment:,.2f}"
-            })
+        # if property_obj.maximum_investment:
+        #     max_investment = Decimal(str(property_obj.maximum_investment))
+        #     if amount > max_investment:
+        #         raise serializers.ValidationError({
+        #             'amount': f"Maximum investment is ₹{max_investment:,.2f}"
+        #         })
+        
+        # # Check minimum investment
+        # if data['amount'] < property_obj.minimum_investment:
+        #     raise serializers.ValidationError({
+        #         'amount': f"Minimum investment is ₹{property_obj.minimum_investment:,.2f}"
+        #     })
+        
+        # # Check maximum investment if set
+        # if property_obj.maximum_investment and data['amount'] > property_obj.maximum_investment:
+        #     raise serializers.ValidationError({
+        #         'amount': f"Maximum investment is ₹{property_obj.maximum_investment:,.2f}"
+        #     })
         
         # Check units available (don't deduct yet, just validate)
-        if data['units_count'] > property_obj.available_units:
-            raise serializers.ValidationError({
-                'units_count': f"Only {property_obj.available_units} units available"
-            })
+        # if data['units_count'] > property_obj.available_units:
+        #     raise serializers.ValidationError({
+        #         'units_count': f"Only {property_obj.available_units} units available"
+        #     })
         
         # Calculate expected investment based on units
-        expected_amount = property_obj.price_per_unit * data['units_count']
+        # expected_amount = property_obj.price_per_unit * data['units_count']
         
-        # Allow some tolerance for rounding
-        if abs(expected_amount - data['amount']) > 1:  # 1 rupee tolerance
-            raise serializers.ValidationError({
-                'amount': f"Amount should be ₹{expected_amount:,.2f} for {data['units_count']} units"
-            })
+        # # Allow some tolerance for rounding
+        # if abs(expected_amount - data['amount']) > 1:  # 1 rupee tolerance
+        #     raise serializers.ValidationError({
+        #         'amount': f"Amount should be ₹{expected_amount:,.2f} for {data['units_count']} units"
+        #     })
+
+        # ✅ FIX: Calculate expected amount using Decimal
+        # price_per_unit = Decimal(str(property_obj.price_per_unit))
+        # expected_amount = price_per_unit * data['units_count']
+
+                # 🔥 NO minimum investment restriction
+        # data['is_partial_payment'] = amount < expected_amount
+        # data['expected_amount'] = expected_amount
+        
+        # # Allow some tolerance for rounding
+        # if abs(expected_amount - amount) > Decimal('1.00'):  # 1 rupee tolerance
+        #     raise serializers.ValidationError({
+        #         'amount': f"Amount should be ₹{expected_amount:,.2f} for {data['units_count']} units"
+        #     })
         
         # ============================================
         # 🆕 PAYMENT METHOD VALIDATION

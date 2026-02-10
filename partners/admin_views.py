@@ -92,10 +92,54 @@ class AdminCPApplicationDetailView(APIView):
         serializer = CPProfileSerializer(cp)
         return Response(serializer.data)
 
+from accounts.services.email_service import send_dynamic_email
 
 # ============================================
 # CP APPROVAL/REJECTION
 # ============================================
+
+# class AdminCPApproveView(APIView):
+#     """
+#     POST /api/admin/cp/{id}/approve/
+#     Approve CP application
+#     """
+#     permission_classes = [IsAuthenticated, IsAdmin]
+    
+#     def post(self, request, cp_id):
+#         cp = get_object_or_404(ChannelPartner, id=cp_id)
+        
+#         # Check if already approved
+#         if cp.is_verified:
+#             return Response(
+#                 {'error': 'CP already approved'},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+        
+#         serializer = CPApprovalSerializer(data=request.data)
+#         if serializer.is_valid():
+#             # Approve CP
+#             cp = CPService.approve_cp(
+#                 cp=cp,
+#                 approved_by=request.user,
+#                 approval_data=serializer.validated_data
+#             )
+
+#              # ✅ ACTIVATE USER ACCOUNT
+#             user = cp.user
+#             user.is_active = True
+#             user.is_active_cp = True
+#             user.cp_status = 'approved' 
+#             user.save()
+            
+#             response_serializer = CPProfileSerializer(cp)
+#             return Response({
+#                 'message': 'CP approved successfully',
+#                 'data': response_serializer.data
+#             })
+        
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 class AdminCPApproveView(APIView):
     """
@@ -106,8 +150,9 @@ class AdminCPApproveView(APIView):
     
     def post(self, request, cp_id):
         cp = get_object_or_404(ChannelPartner, id=cp_id)
-        
-        # Check if already approved
+        CP_DASHBOARD_URL = 'http://localhost:5173/cp/dashboard'  # or your actual CP dashboard URL
+
+        # ❌ Already approved
         if cp.is_verified:
             return Response(
                 {'error': 'CP already approved'},
@@ -115,21 +160,54 @@ class AdminCPApproveView(APIView):
             )
         
         serializer = CPApprovalSerializer(data=request.data)
-        if serializer.is_valid():
-            # Approve CP
-            cp = CPService.approve_cp(
-                cp=cp,
-                approved_by=request.user,
-                approval_data=serializer.validated_data
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ Approve CP (service logic)
+        cp = CPService.approve_cp(
+            cp=cp,
+            approved_by=request.user,
+            approval_data=serializer.validated_data
+        )
+
+        # ✅ Activate user account
+        user = cp.user
+        user.is_active = True
+        user.is_active_cp = True
+        user.cp_status = 'approved'
+        user.save()
+        print("Mai abhi mail bhejn ja rha au")
+        # ✅ SEND APPROVAL EMAIL
+        try:
+            send_dynamic_email(
+                email_type='cp_application_approved',
+                to=user.email,
+                params={
+                    'name': user.get_full_name() or user.username,
+                    'cp_code': cp.cp_code,
+                    'tier': cp.partner_tier,
+                    'dashboard_url': CP_DASHBOARD_URL,  # optional
+                    'year': timezone.now().year 
+                }
             )
-            
-            response_serializer = CPProfileSerializer(cp)
-            return Response({
-                'message': 'CP approved successfully',
+        except Exception as e:
+            print("Mai abhi mail bhejn ja rha au error",e)
+            return Response(
+                {
+                    "error": f"Approval email failed: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # ✅ Response
+        response_serializer = CPProfileSerializer(cp)
+        return Response(
+            {
+                'message': 'CP approved successfully and email sent',
                 'data': response_serializer.data
-            })
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            },
+            status=status.HTTP_200_OK
+        )
 
 
 class AdminCPRejectView(APIView):
@@ -408,7 +486,7 @@ class AdminCPDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AdminCPActivateView(APIView):
+class AdminCPActivateView(APIView): 
     """
     POST /api/admin/cp/{id}/activate/
     Activate CP
@@ -419,6 +497,12 @@ class AdminCPActivateView(APIView):
         cp = get_object_or_404(ChannelPartner, id=cp_id)
         cp.is_active = True
         cp.save()
+
+                # ✅ ACTIVATE USER ACCOUNT
+        user = cp.user
+        user.is_active = True
+        user.is_active_cp = True
+        user.save()
         
         return Response({
             'message': 'CP activated successfully'
@@ -436,6 +520,12 @@ class AdminCPDeactivateView(APIView):
         cp = get_object_or_404(ChannelPartner, id=cp_id)
         cp.is_active = False
         cp.save()
+
+                # ✅ DEACTIVATE USER ACCOUNT
+        user = cp.user
+        user.is_active = False  # 👈 THIS PREVENTS LOGIN
+        user.is_active_cp = False
+        user.save()
         
         return Response({
             'message': 'CP deactivated successfully'
@@ -603,7 +693,7 @@ class AdminCreateCPView(APIView):
                 email=email,
                 first_name=first_name,
                 last_name=last_name,
-                is_active=True,
+                is_active=auto_approve,
                 phone_verified=True,
             )
             user.set_password(password)
@@ -694,13 +784,25 @@ class AdminCreateCPView(APIView):
             # ============================================
             cp_serializer = CPProfileSerializer(cp)
             
+            # return Response({
+            #     'success': True,
+            #     'message': f'CP created successfully. CP Code: {cp.cp_code}',
+            #     'data': cp_serializer.data,
+            #     'credentials': {
+            #         'username': phone,
+            #         'password': password,  # ⚠️ ONLY for immediate display to admin
+            #         'email': email
+            #     },
+            #     'authorized_properties_count': len(authorized_properties)
+            # }, status=status.HTTP_201_CREATED)
             return Response({
                 'success': True,
                 'message': f'CP created successfully. CP Code: {cp.cp_code}',
                 'data': cp_serializer.data,
                 'credentials': {
+                    'name': user.get_full_name(),  # ✅ ADD THIS LINE
                     'username': phone,
-                    'password': password,  # ⚠️ ONLY for immediate display to admin
+                    'password': password,
                     'email': email
                 },
                 'authorized_properties_count': len(authorized_properties)
@@ -747,7 +849,8 @@ def admin_create_permanent_invite(request, cp_id):
                 'error': 'CP already has a permanent invite',
                 'data': {
                     'invite_code': existing.invite_code,
-                    'invite_link': f"http://localhost:5173/signup?invite={existing.invite_code}"
+                    # 'invite_link': f"http://localhost:5173/signup?invite={existing.invite_code}"
+                    'invite_link': f"https://app.assertkart.com/signup?invite={existing.invite_code}"
                 }
             }, status=status.HTTP_400_BAD_REQUEST)
         
@@ -782,4 +885,6 @@ def admin_create_permanent_invite(request, cp_id):
         return Response(
             {'error': 'CP not found'},
             status=status.HTTP_404_NOT_FOUND
-        )
+        ) 
+    
+    

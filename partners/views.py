@@ -8,6 +8,13 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
 
+from accounts.services.email_service import send_dynamic_email
+from django.utils import timezone
+from django.conf import settings
+
+
+
+
 
 from accounts.permissions import IsChannelPartner
 from .models import (
@@ -105,18 +112,46 @@ class CPApplicationView(APIView):
             # Set CP flags
             user.is_cp = True
             user.cp_status = 'pending'
+            user.is_active_cp = False   # 👈 NOT ACTIVE YET
             user.save()
             
             # Create CP application using service
             serializer = CPApplicationSerializer(data=data)
+
+            
             if serializer.is_valid():
+                application_data = serializer.validated_data.copy()
+                application_data.pop('user', None)
                 cp = CPService.create_cp_application(
                     user=user,
-                    application_data=serializer.validated_data
+                    # application_data=serializer.validated_data
+                    application_data=application_data
+
                 )
                 
                 # TODO: Send email with credentials
                 # send_cp_application_email(user, temp_password, cp)
+
+                # ✅ Send application received email
+                try:
+                    send_dynamic_email(
+                        email_type='cp_application_submitted',
+                        to=user.email,
+                        params={
+                            'name': user.get_full_name() or name,
+                            'email': user.email,
+                            'phone': user.phone,
+                            'application_id': cp.id,   # ✅ REQUIRED
+                            'year': timezone.now().year
+                        }
+                    )
+                except KeyError as e:
+                    return Response(
+                        {"error": str(e)},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+
                 
                 return Response(
                     {
@@ -169,6 +204,7 @@ class CPProfileView(APIView):
     """
     GET /api/cp/profile/
     PUT /api/cp/profile/
+    PATCH /api/cp/profile/  # ✅ ADDED
     Get or update CP profile
     """
     permission_classes = [IsAuthenticated, IsChannelPartner]
@@ -180,18 +216,42 @@ class CPProfileView(APIView):
     
     def put(self, request):
         cp = request.user.cp_profile
+
+    def patch(self, request):  # ✅ ADDED PATCH METHOD
+        """Partial update"""
+        return self._update_profile(request, partial=True)  
+
+    def _update_profile(self, request, partial=False):
+        """Shared update logic"""
+        try:
+            cp = request.user.cp_profile
+        except ChannelPartner.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'CP profile not found'
+            }, status=status.HTTP_404_NOT_FOUND)  
         
         # Only allow updating certain fields
         allowed_fields = [
             'business_address',
             'bank_name',
+            'company_name', 
             'account_number',
             'ifsc_code',
             'account_holder_name',
             'commission_notes',
+             'pan_number',  
         ]
         
         update_data = {k: v for k, v in request.data.items() if k in allowed_fields}
+
+        if not update_data:
+            return Response({
+                'success': False,
+                'error': 'No valid fields to update'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = CPProfileSerializer(cp, data=update_data, partial=True)
         
         serializer = CPProfileSerializer(cp, data=update_data, partial=True)
         if serializer.is_valid():
@@ -687,7 +747,26 @@ class AdminCPApprovalView(APIView):
             
             # TODO: Send approval email with login credentials
             # send_cp_approval_email(user, cp)
-            
+            # print("sednig sexyt mai")
+            # ✅ Send CP approval email
+            try:
+                send_dynamic_email(
+                    email_type='cp_application_approved',
+                    to=user.email,
+                    params={
+                        'name': user.get_full_name() or user.username,
+                        'cp_code': cp.cp_code,
+                        'tier': cp.partner_tier,
+                        # 'dashboard_url': settings.CP_DASHBOARD_URL,
+                        'year': timezone.now().year
+                    }
+                )
+            except Exception as e:
+                return Response(
+                    {"error": f"Approval email failed: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
             return Response({
                 'success': True,
                 'message': f'CP application approved. User account activated.',
@@ -975,3 +1054,65 @@ def send_invite_email(request):
             'success': False,
             'error': f'Failed to send email: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+# partners/views.py
+# Add this view at the end of your file
+
+# ============================================
+# ADMIN: GET CP LEADS
+# ============================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_get_cp_leads(request, cp_id):
+    """
+    GET /api/admin/cp/{cp_id}/leads/
+    Admin gets all leads added by a specific CP
+    """
+    # Check if user is admin
+    if not request.user.is_admin and not request.user.is_staff:
+        return Response(
+            {'error': 'Admin access required'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    try:
+        # Get CP
+        cp = ChannelPartner.objects.get(id=cp_id)
+        
+        # Get query params
+        lead_status = request.query_params.get('status')
+        search = request.query_params.get('search')
+        
+        # Get leads
+        leads = CPLead.objects.filter(cp=cp)
+        
+        if lead_status:
+            leads = leads.filter(lead_status=lead_status)
+        
+        if search:
+            leads = leads.filter(
+                Q(customer_name__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(email__icontains=search)
+            )
+        
+        leads = leads.select_related('interested_property').order_by('-created_at')
+        
+        # Serialize leads
+        serializer = CPLeadSerializer(leads, many=True)
+        
+        return Response({
+            'success': True,
+            'count': leads.count(),
+            'results': serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    except ChannelPartner.DoesNotExist:
+        return Response(
+            {'error': 'CP not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+

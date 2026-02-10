@@ -14,7 +14,7 @@ class InvestmentService:
 
     @staticmethod
     @transaction.atomic
-    def create_investment(user, property_obj, amount, units_count, referral_code=None, payment_data=None):
+    def create_investment(user, property_obj, amount, units_count, referral_code=None, payment_data=None ,commitment_amount=None, payment_due_date=None  ):
         """
         Create investment for user WITH payment details (NO wallet deduction)
         
@@ -27,6 +27,34 @@ class InvestmentService:
             payment_data: Dict with payment details (method, date, transaction_no, etc.)
         """
         amount = Decimal(str(amount))
+        price_per_unit = getattr(property_obj, "price_per_unit", None)
+        if price_per_unit is None:
+            price_per_unit = amount / Decimal(units_count)
+        
+        # Calculate totals and partial flags
+        total_required_amount = price_per_unit * units_count
+        if commitment_amount:
+            total_required_amount = Decimal(str(commitment_amount))
+        is_partial = amount < total_required_amount
+        due_amount = total_required_amount - amount if is_partial else Decimal('0')
+
+        # Set payment due date: use provided value else default 30 days for partial
+        if payment_due_date:
+            logger.info(f"Payment due date provided by admin/API: {payment_due_date}")
+        elif is_partial:
+            from datetime import timedelta
+            payment_due_date = timezone.now().date() + timedelta(days=30)
+            logger.info(f"Payment due date auto-set (partial): {payment_due_date}")
+        
+        logger.info(f"💰 Payment Analysis:")
+        logger.info(f"   Total Required: ₹{total_required_amount}")
+        logger.info(f"   Amount Paid: ₹{amount}")
+        logger.info(f"   Due Amount: ₹{due_amount}")
+        logger.info(f"   Is Partial: {is_partial}")
+        if payment_due_date:
+            logger.info(f"   Due Date: {payment_due_date}")
+
+
         logger.info(f"📊 Creating investment: amount={amount}, units={units_count}, referral_code={referral_code}")
         
         # ============================================
@@ -70,11 +98,15 @@ class InvestmentService:
         # ============================================
         logger.info(f"📈 Calculating expected returns...")
         irr = (
-            getattr(property_obj, "expected_return_percentage", None)
+             getattr(property_obj, "expected_return_percentage", None)
             or getattr(property_obj, "target_irr", None)
             or 0
         )
-        irr = Decimal(str(irr))
+            # 🔥 FIX: Strip % signs and spaces from database
+        if isinstance(irr, str):
+            irr = irr.replace('%', '').replace(' ', '').strip()
+        
+        irr = Decimal(str(irr)) if irr else Decimal("0")
         expected_return_amount = (amount * irr) / Decimal("100")
         logger.info(f"   IRR: {irr}%")
         logger.info(f"   Expected return: ₹{expected_return_amount}")
@@ -213,6 +245,11 @@ class InvestmentService:
                 price_per_unit_at_investment=price_per_unit,
                 status='pending_payment',  # 🆕 NEW STATUS
                 expected_return_amount=expected_return_amount,
+                  # 🆕 PARTIAL PAYMENT FIELDS
+                is_partial_payment=is_partial,
+                minimum_required_amount=total_required_amount,
+                due_amount=due_amount,
+                payment_due_date=payment_due_date,
                 **payment_fields  # 🆕 ADD PAYMENT FIELDS
             )
             logger.info(f"✅ Investment created: {investment.investment_id}")

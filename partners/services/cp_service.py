@@ -103,12 +103,13 @@ class CPService:
             cp_role = Role.objects.get(slug='channel_partner')
             cp.user.role = cp_role
         except Role.DoesNotExist:
-            pass
+            pass 
 
         # 👇 ADD THESE LINES (set CP flags on User model)
         cp.user.is_cp = True
         cp.user.cp_status = 'approved'
         cp.user.is_active_cp = True
+        cp.user.is_active = True  # 👈 ADD THIS - REQUIRED FOR LOGIN
         cp.user.save()  # 👈 Save with all fields
 
         # Clear permission cache
@@ -118,6 +119,68 @@ class CPService:
             pass
         
         return cp
+    
+    
+    @staticmethod
+    @transaction.atomic
+    def deactivate_cp(cp, deactivated_by=None):
+        """
+        Deactivate CP and user account
+        
+        Args:
+            cp: ChannelPartner instance
+            deactivated_by: Admin user deactivating (optional)
+        """
+        # Deactivate CP
+        cp.is_active = False
+        cp.save()
+        
+        # ✅ DEACTIVATE USER ACCOUNT - PREVENTS LOGIN
+        cp.user.is_active = False  # 👈 BLOCKS LOGIN
+        cp.user.is_active_cp = False
+        cp.user.cp_status = 'inactive'
+        cp.user.save()
+        
+        # Clear permission cache
+        try:
+            PermissionService.clear_user_permission_cache(cp.user)
+        except:
+            pass
+        
+        return cp
+
+    @staticmethod
+    @transaction.atomic
+    def activate_cp(cp, activated_by=None):
+        """
+        Activate CP and user account
+        
+        Args:
+            cp: ChannelPartner instance
+            activated_by: Admin user activating (optional)
+        """
+        # Only activate if CP is verified
+        if not cp.is_verified:
+            raise ValueError("Cannot activate unverified CP")
+        
+        # Activate CP
+        cp.is_active = True
+        cp.save()
+        
+        # ✅ ACTIVATE USER ACCOUNT - ALLOWS LOGIN
+        cp.user.is_active = True  # 👈 ALLOWS LOGIN
+        cp.user.is_active_cp = True
+        cp.user.cp_status = 'approved'
+        cp.user.save()
+        
+        # Clear permission cache
+        try:
+            PermissionService.clear_user_permission_cache(cp.user)
+        except:
+            pass
+        
+        return cp
+    
     
     @staticmethod
     @transaction.atomic

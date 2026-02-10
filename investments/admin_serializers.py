@@ -16,6 +16,21 @@ class AdminInvestmentListSerializer(serializers.ModelSerializer):
     customer_email = serializers.CharField(source='customer.email')
     property_name = serializers.CharField(source='property.name')
     property_address = serializers.CharField(source='property.address')  # 👈 Changed to address
+
+        # 🆕 Add payment summary fields
+    paid_amount = serializers.DecimalField(
+        source='amount',
+        max_digits=15,
+        decimal_places=2,
+        read_only=True
+    )
+    total_investment_amount = serializers.DecimalField(
+        source='minimum_required_amount',
+        max_digits=15,
+        decimal_places=2,
+        read_only=True
+    )
+
     
     class Meta:
         model = Investment
@@ -42,6 +57,13 @@ class AdminInvestmentListSerializer(serializers.ModelSerializer):
             'lock_in_end_date',
             'maturity_date',
             'created_at',
+
+               # 🆕 Add these
+            'is_partial_payment',
+            'paid_amount',
+            'due_amount',
+            'total_investment_amount',
+            'payment_due_date',
         ]
 
 
@@ -51,6 +73,8 @@ class AdminInvestmentDetailSerializer(serializers.ModelSerializer):
     property_details = serializers.SerializerMethodField()
     transaction_details = serializers.SerializerMethodField()
     commission_details = serializers.SerializerMethodField()
+
+    payment_summary = serializers.SerializerMethodField()
     
     class Meta:
         model = Investment
@@ -113,6 +137,21 @@ class AdminInvestmentDetailSerializer(serializers.ModelSerializer):
             'approved_at': comm.approved_at,
             'paid_at': comm.paid_at,
         }
+    
+    def get_payment_summary(self, obj):
+        """Get payment breakdown"""
+        return {
+            'is_partial_payment': obj.is_partial_payment,
+            'total_investment_amount': str(obj.minimum_required_amount or obj.amount),
+            'paid_amount': str(obj.amount),
+            'due_amount': str(obj.due_amount),
+            'payment_due_date': obj.payment_due_date,
+            'payment_status': 'Fully Paid' if obj.due_amount == 0 else 'Partial Payment',
+        }
+    
+    class Meta:
+        model = Investment
+        fields = '__all__'
 
 
 class AdminInvestmentActionSerializer(serializers.Serializer):
@@ -149,3 +188,112 @@ class AdminInvestmentStatsSerializer(serializers.Serializer):
     total_investment_amount = serializers.DecimalField(max_digits=15, decimal_places=2)
     total_pending_amount = serializers.DecimalField(max_digits=15, decimal_places=2)
     total_approved_amount = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+from decimal import Decimal
+from rest_framework import serializers
+from accounts.models import User   # <-- using your local User model
+from properties.models import Property
+
+class CreateInvestmentSerializer(serializers.Serializer):
+    customer_id = serializers.IntegerField(required=True)
+    property_id = serializers.IntegerField(required=True)
+
+       # ✅ ADD THIS FIELD
+    paid_amount = serializers.DecimalField(
+        max_digits=15, 
+        decimal_places=2,
+        required=True,
+        help_text="Actual amount paid by customer"
+    )
+    # amount = serializers.DecimalField(max_digits=15, decimal_places=2)
+        # Keep 'amount' as alias for backward compatibility
+    amount = serializers.DecimalField(
+        max_digits=15, 
+        decimal_places=2,
+        required=False
+    )
+        # ✅ ADD THIS FIELD
+    commitment_amount = serializers.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        help_text="Total investment commitment (if different from paid amount)"
+    )
+    units_count = serializers.IntegerField(min_value=1)
+    referral_code = serializers.CharField(required=False, allow_blank=True, max_length=50)
+
+    payment_method = serializers.ChoiceField(
+        choices=['ONLINE', 'POS', 'DRAFT_CHEQUE', 'NEFT_RTGS']
+    )
+    payment_date = serializers.DateTimeField()
+    payment_notes = serializers.CharField(required=False, allow_blank=True)
+
+    # Allow admin to set due date in either ISO or DD-MM-YYYY (UI often uses dd-mm-yyyy)
+    payment_due_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        input_formats=['%Y-%m-%d', '%d-%m-%Y']
+    )
+
+    payment_mode = serializers.CharField(required=False, allow_blank=True)
+    transaction_no = serializers.CharField(required=False, allow_blank=True)
+    pos_slip_image = serializers.ImageField(required=False, allow_null=True)
+
+    cheque_number = serializers.CharField(required=False, allow_blank=True)
+    cheque_date = serializers.DateField(required=False, allow_null=True)
+    bank_name = serializers.CharField(required=False, allow_blank=True)
+    ifsc_code = serializers.CharField(required=False, allow_blank=True)
+    branch_name = serializers.CharField(required=False, allow_blank=True)
+    cheque_image = serializers.ImageField(required=False, allow_null=True)
+
+    neft_rtgs_ref_no = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_customer_id(self, value):
+        print("validate_customer_id called with:", value)
+        try:
+            return User.objects.get(id=int(value), is_active=True)
+        except Exception as e:
+            print("Lookup failed:", e)
+            return int(value)
+
+    def validate_property_id(self, value):
+        try:
+            return Property.objects.get(
+                id=value,
+                status__in=['live', 'funding'],
+                is_published=True
+            )
+        except Property.DoesNotExist:
+            raise serializers.ValidationError("Property not available for investment")
+
+    def validate(self, data):
+        amount = Decimal(str(data['amount']))
+        property_obj = data['property_id']   # already a Property object
+        units_count = data['units_count']
+
+        if units_count > property_obj.available_units:
+            raise serializers.ValidationError({
+                'units_count': f"Only {property_obj.available_units} units available"
+            })
+
+        expected_amount = Decimal(str(property_obj.price_per_unit)) * units_count
+        if amount > expected_amount:
+            raise serializers.ValidationError({
+                'amount': f"Amount cannot exceed ₹{expected_amount:,.2f}"
+            })
+
+        pm = data['payment_method']
+        if pm in ['ONLINE', 'POS'] and not data.get('transaction_no'):
+            raise serializers.ValidationError({'transaction_no': 'Transaction number is required'})
+        if pm == 'DRAFT_CHEQUE':
+            required = ['cheque_number', 'cheque_date', 'bank_name', 'ifsc_code', 'branch_name']
+            missing = [f for f in required if not data.get(f)]
+            if missing:
+                raise serializers.ValidationError({
+                    f: f'{f.replace("_", " ").title()} is required' for f in missing
+                })
+        if pm == 'NEFT_RTGS' and not data.get('neft_rtgs_ref_no'):
+            raise serializers.ValidationError({'neft_rtgs_ref_no': 'NEFT/RTGS reference number is required'})
+
+        return data

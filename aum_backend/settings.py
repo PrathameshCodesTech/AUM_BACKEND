@@ -38,8 +38,8 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG', default=True)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.29.63']
-
+#ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.29.63']
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 
 
 # Application definition
@@ -103,13 +103,16 @@ SIMPLE_JWT = {
 
 # CORS Settings (for React frontend)
 # CORS Settings (for React frontend)
+# Prefer env override; fallback includes prod and local dev origins
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
-    "http://localhost:3000",
+    "https://app.assetkart.com",
+    "http://app.assetkart.com",
     "http://localhost:5173",
-    "http://192.168.29.107:3000",  # Friend's React app
-    "http://192.168.29.107:5173",  # Friend's Vite app
-
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ])
+
 
 
 CORS_ALLOW_CREDENTIALS = True
@@ -202,6 +205,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -280,6 +284,11 @@ LOGGING = {
             'propagate': False,
         },
     },
+   'investments': {  # ADD THIS
+        'handlers': ['console'],
+        'level': 'INFO',
+        'propagate': False,
+    },
 }
 
 
@@ -326,11 +335,25 @@ CP_INVITE_VALIDITY_DAYS = env.int('CP_INVITE_VALIDITY_DAYS', default=30)
 
 
 
+#EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+#EMAIL_HOST = 'smtp.gmail.com'
+#EMAIL_PORT = 587
+#EMAIL_USE_TLS = True
+#EMAIL_HOST_USER = 'vasisayed09421@gmail.com'
+#EMAIL_HOST_PASSWORD = 'zfwlrmkvnawjhiak'
+
+#DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'vasisayed09421@gmail.com'
-EMAIL_HOST_PASSWORD = 'zfwlrmkvnawjhiak'
+
+EMAIL_HOST = 'smtp.hostinger.com'
+EMAIL_PORT = 465
+
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False     # must be False — SSL only
+
+EMAIL_HOST_USER = 'invest@assetkart.com'
+EMAIL_HOST_PASSWORD = 'Success@786'  # use env variable
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+ADMIN_NOTIFICATION_EMAIL = env('ADMIN_NOTIFICATION_EMAIL', default=EMAIL_HOST_USER)
+SUPPORT_EMAIL = env('SUPPORT_EMAIL', default='invest@assetkart.com')

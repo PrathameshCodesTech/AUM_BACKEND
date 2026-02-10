@@ -629,3 +629,234 @@ def check_cp_relation(request):
         'success': True,
         'has_cp_relation': False
     }, status=status.HTTP_200_OK)
+
+
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework import status
+# from rest_framework.permissions import IsAuthenticated
+from django.http import HttpResponse
+from .models import Investment
+from .serializers import InvestmentSerializer
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class InvestmentReceiptsView(APIView):
+    """
+    GET /api/wallet/investments/receipts/
+    Get all approved investments as receipts
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            # Get only approved investments (these have receipts)
+            receipts = Investment.objects.filter(
+                customer=request.user,
+                status='approved',
+                is_deleted=False
+            ).select_related('property').order_by('-approved_at')
+            
+            # Use the same serializer but add receipt-specific fields
+            serializer = InvestmentSerializer(
+                receipts, 
+                many=True, 
+                context={'request': request}
+            )
+            
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'count': receipts.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching receipts: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to fetch receipts: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DownloadReceiptView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/receipt/download/
+    Download receipt PDF for approved investment
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, investment_id):
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                status='approved',  # Only approved investments have receipts
+                is_deleted=False
+            )
+            
+            # Generate PDF receipt in requested layout
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import mm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from io import BytesIO
+            from datetime import datetime
+
+            def amount_to_words(num):
+                num = int(round(float(num)))
+                ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+                        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+                        "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+                tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+                scales = [(10000000, "Crore"), (100000, "Lakh"), (1000, "Thousand"), (100, "Hundred")]
+                words = []
+                n = num
+                for value, name in scales:
+                    if n >= value:
+                        count = n // value
+                        n = n % value
+                        if count >= 20:
+                            words.append(tens[count // 10])
+                            if count % 10:
+                                words.append(ones[count % 10])
+                        else:
+                            words.append(ones[count])
+                        words.append(name)
+                if n >= 20:
+                    words.append(tens[n // 10])
+                    if n % 10:
+                        words.append(ones[n % 10])
+                elif n > 0:
+                    words.append(ones[n])
+                return " ".join([w for w in words if w]) or "Zero"
+
+            payer_name = investment.customer.get_full_name() or investment.customer.username
+            amount_fig = f"₹{investment.amount:,.2f}"
+            amount_words = f"Rupees {amount_to_words(investment.amount)} only"
+            payment_mode = investment.get_payment_method_display() if investment.payment_method else "N/A"
+            txn_ref = investment.transaction_no or "N/A"
+            bank_name = investment.bank_name or "N/A"
+            paid_date = investment.payment_date.date() if getattr(investment, "payment_date", None) else investment.approved_at.date() if investment.approved_at else datetime.now().date()
+            receipt_date = investment.approved_at.date() if investment.approved_at else datetime.now().date()
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm)
+            styles = getSampleStyleSheet()
+            normal = ParagraphStyle('normal', parent=styles['Normal'], fontSize=11, leading=14)
+            title = ParagraphStyle('title', parent=styles['Heading1'], alignment=TA_CENTER, textColor=colors.black, fontSize=18, spaceAfter=12)
+            label_style = ParagraphStyle('label', parent=normal, fontName='Helvetica-Bold')
+            value_style = ParagraphStyle('value', parent=normal)
+
+            elements = []
+            elements.append(Paragraph("PAYMENT RECEIPT", title))
+            elements.append(Spacer(1, 6*mm))
+
+            # Header
+            header_table = Table([
+                [Paragraph("Receipt No.:", label_style), Paragraph(str(investment.investment_id), value_style),
+                 Paragraph("Date:", label_style), Paragraph(receipt_date.strftime('%d-%m-%Y'), value_style)]
+            ], colWidths=[28*mm, 55*mm, 18*mm, 32*mm])
+            header_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(header_table)
+            elements.append(Spacer(1, 4*mm))
+
+            # Body lines
+            body_rows = [
+                ("Received with thanks from", f"Mr./Ms. {payer_name}"),
+                ("Amount (figures)", amount_fig),
+                ("Amount (words)", amount_words),
+                ("Towards", "Investment"),
+                ("Project Name", investment.property.name),
+            ]
+            body_table = Table([[Paragraph(f"{k}:", label_style), Paragraph(v, value_style)] for k,v in body_rows],
+                               colWidths=[45*mm, 98*mm])
+            body_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(body_table)
+            elements.append(Spacer(1, 6*mm))
+
+            pay_rows = [
+                ("Mode of Payment", payment_mode),
+                ("Transaction / Reference No.", txn_ref),
+                ("Dated", paid_date.strftime('%d-%m-%Y')),
+                ("Bank", bank_name),
+            ]
+            pay_table = Table([[Paragraph(f"{k}:", label_style), Paragraph(v, value_style)] for k,v in pay_rows],
+                              colWidths=[45*mm, 98*mm])
+            pay_table.setStyle(TableStyle([
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ]))
+            elements.append(pay_table)
+            elements.append(Spacer(1, 12*mm))
+
+            elements.append(Paragraph("This receipt is issued as an acknowledgement of payment received.", normal))
+            elements.append(Spacer(1, 14*mm))
+
+            elements.append(Paragraph("For AssetKart", normal))
+            elements.append(Spacer(1, 12*mm))
+            elements.append(Paragraph("Authorized Signatory", normal))
+            elements.append(Paragraph("Name: ________________________________", normal))
+            elements.append(Paragraph("Designation: __________________________", normal))
+            elements.append(Spacer(1, 12*mm))
+            elements.append(Paragraph("Powered by AssetKart", ParagraphStyle('center', parent=normal, alignment=TA_CENTER)))
+
+            doc.build(elements)
+            
+            # Return PDF
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="receipt-{investment.investment_id}.pdf"'
+            
+            return response
+            
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Receipt not found or not available'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"❌ Error generating receipt: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to generate receipt: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReceiptDetailView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/receipt/
+    Get receipt details (same as investment detail but for approved only)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, investment_id):
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                status='approved',
+                is_deleted=False
+            )
+            
+            serializer = InvestmentSerializer(
+                investment, 
+                context={'request': request}
+            )
+            
+            return Response({
+                'success': True,
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Receipt not found'
+            }, status=status.HTTP_404_NOT_FOUND)

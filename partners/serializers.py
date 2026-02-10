@@ -25,7 +25,7 @@ class CPApplicationSerializer(serializers.ModelSerializer):
     # User fields (from related user)
     first_name = serializers.CharField(source='user.first_name', read_only=True)
     last_name = serializers.CharField(source='user.last_name', read_only=True)
-    email = serializers.EmailField(source='user.email', read_only=True)
+    email = serializers.EmailField(source='user.email')
     phone = serializers.CharField(source='user.phone', read_only=True)
     
     class Meta:
@@ -201,6 +201,7 @@ class CPListSerializer(serializers.ModelSerializer):
     
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
+    phone = serializers.CharField(source='user.phone', read_only=True)  # ✅ ADD THIS
     total_customers = serializers.SerializerMethodField()
     total_invested = serializers.SerializerMethodField()
     total_commission = serializers.SerializerMethodField()
@@ -212,12 +213,30 @@ class CPListSerializer(serializers.ModelSerializer):
             'cp_code',
             'user_name',
             'user_email',
+            'phone',  # ✅ ADD THIS
             'agent_type',
             'company_name',
             'partner_tier',
             'onboarding_status',
             'is_verified',
             'is_active',
+            'total_customers',
+            'total_invested',
+            'total_commission',
+            'created_at',
+
+             # ✅ ADD THESE FIELDS TOO:
+            'pan_number',
+            'gst_number',
+            'rera_number',
+            'business_address',
+            'bank_name',
+            'account_number',
+            'ifsc_code',
+            'account_holder_name',
+            'commission_notes',
+            'source',
+            
             'total_customers',
             'total_invested',
             'total_commission',
@@ -389,10 +408,72 @@ class AuthorizePropertiesSerializer(serializers.Serializer):
 # LEAD MANAGEMENT SERIALIZERS
 # ============================================
 
-class CPLeadSerializer(serializers.ModelSerializer):
-    """Lead management serializer"""
+# class CPLeadSerializer(serializers.ModelSerializer):
+#     """Lead management serializer"""
     
-    property_details = serializers.SerializerMethodField()
+#     property_details = serializers.SerializerMethodField()
+#     converted_customer_details = serializers.SerializerMethodField()
+    
+#     class Meta:
+#         model = CPLead
+#         fields = [
+#             'id',
+#             'cp',
+#             'customer_name',
+#             'phone',
+#             'email',
+#             'interested_property',
+#             'property_details',
+#             'lead_status',
+#             'notes',
+#             'next_follow_up_date',
+#             'converted_customer',
+#             'converted_customer_details',
+#             'converted_at',
+#             'lead_source',
+#             'created_at',
+#             'updated_at',
+#         ]
+#         read_only_fields = [
+#             'cp',
+#             'converted_customer',
+#             'converted_at',
+#             'created_at',
+#             'updated_at',
+#         ]
+    
+#     def get_property_details(self, obj):
+#         """Get property info"""
+#         if obj.interested_property:
+#             return {
+#                 'id': obj.interested_property.id,
+#                 'name': obj.interested_property.name,
+#                 'location': obj.interested_property.location,
+#             }
+#         return None
+    
+#     def get_converted_customer_details(self, obj):
+#         """Get converted customer info"""
+#         if obj.converted_customer:
+#             return {
+#                 'id': obj.converted_customer.id,
+#                 'username': obj.converted_customer.username,
+#                 'email': obj.converted_customer.email,
+#             }
+#         return None
+
+# partners/serializers.py
+# ============================================
+# LEAD MANAGEMENT SERIALIZERS
+# ============================================
+
+class CPLeadSerializer(serializers.ModelSerializer):
+    """Lead management serializer - Updated for Admin Dashboard"""
+    
+    # Rename to match frontend expectations
+    property = serializers.SerializerMethodField()  # ✅ Changed from property_details
+    name = serializers.CharField(source='customer_name')  # ✅ Map customer_name to name
+    status = serializers.CharField(source='lead_status')  # ✅ Map lead_status to status
     converted_customer_details = serializers.SerializerMethodField()
     
     class Meta:
@@ -400,12 +481,14 @@ class CPLeadSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'cp',
-            'customer_name',
+            'name',  # ✅ Added (mapped from customer_name)
+            'customer_name',  # Keep for backward compatibility
             'phone',
             'email',
             'interested_property',
-            'property_details',
-            'lead_status',
+            'property',  # ✅ Changed from property_details
+            'status',  # ✅ Added (mapped from lead_status)
+            'lead_status',  # Keep for backward compatibility
             'notes',
             'next_follow_up_date',
             'converted_customer',
@@ -423,13 +506,14 @@ class CPLeadSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
     
-    def get_property_details(self, obj):
-        """Get property info"""
+    def get_property(self, obj):
+        """Get property info - matches frontend expectation"""
         if obj.interested_property:
             return {
                 'id': obj.interested_property.id,
                 'name': obj.interested_property.name,
-                'location': obj.interested_property.location,
+                'slug': getattr(obj.interested_property, 'slug', ''),
+                'location': getattr(obj.interested_property, 'location', ''),
             }
         return None
     
@@ -440,6 +524,7 @@ class CPLeadSerializer(serializers.ModelSerializer):
                 'id': obj.converted_customer.id,
                 'username': obj.converted_customer.username,
                 'email': obj.converted_customer.email,
+                'phone': getattr(obj.converted_customer, 'phone', ''),
             }
         return None
 
@@ -475,6 +560,10 @@ class CPInviteSerializer(serializers.ModelSerializer):
     """CP invite serializer"""
     
     used_by_details = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format="%Y-%m-%dT%H:%M:%SZ")
+    is_expired = serializers.DateTimeField(format="%Y-%m-%dT%H:%M:%SZ")
+    used_at = serializers.DateTimeField(format="%Y-%m-%dT%H:%M:%SZ", allow_null=True)
+  
     is_valid = serializers.SerializerMethodField()
     
     class Meta:
@@ -495,6 +584,7 @@ class CPInviteSerializer(serializers.ModelSerializer):
             'is_expired',
             'is_valid',
             'created_at',
+            'used_at',
         ]
         read_only_fields = [
             'cp',
@@ -910,3 +1000,6 @@ class AdminCreateCPSerializer(serializers.ModelSerializer):
                 })
         
         return data
+    
+
+    

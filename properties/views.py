@@ -7,6 +7,8 @@ from .serializers import PropertyListSerializer, PropertyDetailSerializer,Proper
 from .services.property_service import PropertyService
 from django.utils import timezone
 
+from accounts.services.email_service import send_dynamic_email
+
 
 class PropertyListView(generics.ListAPIView):
     """
@@ -163,6 +165,11 @@ class ExpressInterestView(APIView):
     
     def post(self, request, property_id):
         from .models import PropertyInterest
+        from django.conf import settings
+        # from utils.emails import send_dynamic_email
+        import logging
+        
+        logger = logging.getLogger(__name__) 
         
         try:
             # Check if property exists
@@ -190,8 +197,35 @@ class ExpressInterestView(APIView):
             else:
                 message = 'Interest registered successfully. Our team will contact you soon.'
             
-            # TODO: Send notification to admin/sales team
-            # send_interest_notification(interest)
+            # 🆕 SEND EMAIL TO ADMIN using centralized template
+            try:
+                admin_email = getattr(settings, 'ADMIN_NOTIFICATION_EMAIL', settings.EMAIL_HOST_USER)
+                
+                # Prepare email parameters
+                email_params = {
+                    'user_name': request.user.get_full_name() or 'Not provided',
+                    'user_email': request.user.email,
+                    'user_phone': getattr(request.user, 'phone', 'Not provided'),
+                    'user_id': request.user.id,
+                    'project_name': property_obj.name,
+                    'location': f"{property_obj.city}, {property_obj.state}",
+                    'min_investment': f"₹{property_obj.minimum_investment:,.0f}",
+                    'units_interested': interest.token_count,
+                    'admin_link': f"{settings.FRONTEND_BASE_URL}/admin/properties/{property_obj.id}/interests"
+                }
+                
+                # Send email using centralized function
+                send_dynamic_email(
+                    email_type='admin_eoi_notification',
+                    to=admin_email,
+                    params=email_params
+                )
+                
+                logger.info(f"✅ EOI notification email sent to admin for property: {property_obj.name} (User: {request.user.email})")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to send EOI notification email: {str(e)}")
+                # Don't fail the request if email fails - user experience is more important
             
             return Response({
                 'success': True,
@@ -209,6 +243,7 @@ class ExpressInterestView(APIView):
                 'message': 'Property not found'
             }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
+            logger.error(f"❌ Error in ExpressInterestView: {str(e)}")
             return Response({
                 'success': False,
                 'message': str(e)
