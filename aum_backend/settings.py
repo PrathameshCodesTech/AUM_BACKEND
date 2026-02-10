@@ -103,21 +103,21 @@ SIMPLE_JWT = {
 
 # CORS Settings (for React frontend)
 # CORS Settings (for React frontend)
-#CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
-#    "http://localhost:3000",
-#    "http://localhost:5173",
-#    "http://192.168.29.107:3000",  # Friend's React app
-#    "http://192.168.29.107:5173",  # Friend's Vite app
-#    
-#])
-
-CORS_ALLOWED_ORIGINS = [
+# Prefer env override; include dev + prod origins by default
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     "https://app.assetkart.com",
-]
-
-
+    "http://app.assetkart.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+])
 
 CORS_ALLOW_CREDENTIALS = True
+
+# In debug, allow all origins to avoid local CORS issues
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
 
 ROOT_URLCONF = 'aum_backend.urls'
 

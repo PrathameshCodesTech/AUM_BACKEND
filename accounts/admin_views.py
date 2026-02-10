@@ -9,6 +9,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
+from django.core.mail import send_mail
+from django.conf import settings
 from compliance.models import KYC
 from properties.models import Property
 from investments.models import Investment
@@ -294,6 +296,37 @@ class AdminUserCreateAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         role = get_object_or_404(Role, id=4)
         user = serializer.save(role=role)
+
+        # Send welcome email if email provided
+        if user.email:
+            try:
+                name = user.first_name or user.username
+                phone = user.phone or ''
+                subject = "Your AssetKart account is ready"
+                body = (
+                    f"Hi {name},\n\n"
+                    "We've created your AssetKart account.\n\n"
+                    "Login steps:\n"
+                    "1) Go to https://app.assetkart.com (or the mobile app)\n"
+                    f"2) Enter your phone number {phone}\n"
+                    "3) Use the OTP you receive to sign in\n\n"
+                    "Once inside, you can complete your profile and start exploring opportunities.\n\n"
+                    "If you need help, email us at invest@assetkart.com.\n\n"
+                    "Best regards,\n"
+                    "AssetKart Team"
+                )
+                send_mail(
+                    subject=subject,
+                    message=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+                logger.info("Welcome email sent to %s for API-created user %s", user.email, user.pk)
+            except Exception as exc:
+                logger.error("Failed to send API-created user email for user %s: %s", user.pk, exc, exc_info=True)
+        else:
+            logger.warning("Welcome email skipped (no email) for API-created user %s", user.pk)
 
         return Response(
             {

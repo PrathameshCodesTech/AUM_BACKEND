@@ -293,6 +293,8 @@ class UserAdmin(BaseUserAdmin):
                 logger.info("Welcome email sent to %s for admin-created user %s", obj.email, obj.pk)
             except Exception as exc:
                 logger.error("Failed to send admin-created user email for user %s: %s", obj.pk, exc, exc_info=True)
+        else:
+            logger.warning("Welcome email skipped: is_new=%s email=%s", is_new, obj.email)
 
 
 # ============================================

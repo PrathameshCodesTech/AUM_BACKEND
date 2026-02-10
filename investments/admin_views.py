@@ -226,7 +226,7 @@ class AdminInvestmentActionView(APIView):
                     customer_name = investment.customer.get_full_name() or investment.customer.username
                     project_name = investment.property.name
                     dashboard_link = f"{settings.FRONTEND_BASE_URL}/dashboard"
-                    support_email = getattr(settings, 'SUPPORT_EMAIL', 'support@aumcapital.com')
+                    support_email = getattr(settings, 'SUPPORT_EMAIL', 'invest@assetkart.com')
                     
                     send_dynamic_email(
                         email_type='payment_approved',

@@ -41,11 +41,13 @@ class InvestmentService:
         is_partial = amount < total_required_amount
         due_amount = total_required_amount - amount if is_partial else Decimal('0')
         
-        # 🆕 Set payment due date (30 days from now if partial)
-        payment_due_date = None
-        if is_partial:
+        # Set payment due date: honor provided value, else default 30 days for partial
+        if payment_due_date:
+            logger.info(f"Payment due date provided: {payment_due_date}")
+        elif is_partial:
             from datetime import timedelta
             payment_due_date = timezone.now().date() + timedelta(days=30)
+            logger.info(f"Payment due date auto-set (partial): {payment_due_date}")
         
         logger.info(f"💰 Payment Analysis:")
         logger.info(f"   Total Required: ₹{total_required_amount}")

@@ -228,6 +228,12 @@ class CreateInvestmentSerializer(serializers.Serializer):
     )
     payment_date = serializers.DateTimeField()
     payment_notes = serializers.CharField(required=False, allow_blank=True)
+    payment_due_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        input_formats=['%Y-%m-%d', '%d-%m-%Y'],
+        help_text="Due date for remaining payment (accepts YYYY-MM-DD or DD-MM-YYYY)"
+    )
 
     payment_mode = serializers.CharField(required=False, allow_blank=True)
     transaction_no = serializers.CharField(required=False, allow_blank=True)
