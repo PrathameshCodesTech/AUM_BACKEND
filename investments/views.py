@@ -629,3 +629,202 @@ def check_cp_relation(request):
         'success': True,
         'has_cp_relation': False
     }, status=status.HTTP_200_OK)
+
+
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework import status
+# from rest_framework.permissions import IsAuthenticated
+from django.http import HttpResponse
+from .models import Investment
+from .serializers import InvestmentSerializer
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class InvestmentReceiptsView(APIView):
+    """
+    GET /api/wallet/investments/receipts/
+    Get all approved investments as receipts
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            # Get only approved investments (these have receipts)
+            receipts = Investment.objects.filter(
+                customer=request.user,
+                status='approved',
+                is_deleted=False
+            ).select_related('property').order_by('-approved_at')
+            
+            # Use the same serializer but add receipt-specific fields
+            serializer = InvestmentSerializer(
+                receipts, 
+                many=True, 
+                context={'request': request}
+            )
+            
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'count': receipts.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching receipts: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to fetch receipts: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DownloadReceiptView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/receipt/download/
+    Download receipt PDF for approved investment
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, investment_id):
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                status='approved',  # Only approved investments have receipts
+                is_deleted=False
+            )
+            
+            # Generate PDF receipt
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+            from io import BytesIO
+            from datetime import datetime
+            
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4)
+            elements = []
+            styles = getSampleStyleSheet()
+            
+            # Title
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=24,
+                textColor=colors.HexColor('#1a365d'),
+                spaceAfter=30,
+                alignment=TA_CENTER
+            )
+            
+            elements.append(Paragraph("INVESTMENT RECEIPT", title_style))
+            elements.append(Spacer(1, 0.5*inch))
+            
+            # Receipt details
+            receipt_data = [
+                ['Receipt Number:', investment.investment_id],
+                ['Date:', investment.approved_at.strftime('%B %d, %Y') if investment.approved_at else 'N/A'],
+                ['Status:', 'APPROVED'],
+                ['', ''],
+                ['Customer Details:', ''],
+                ['Name:', investment.customer.get_full_name() or investment.customer.username],
+                ['Email:', investment.customer.email],
+                ['Phone:', investment.customer.phone],
+                ['', ''],
+                ['Property Details:', ''],
+                ['Property Name:', investment.property.name],
+                ['Location:', f"{investment.property.city}, {investment.property.state}"],
+                ['', ''],
+                ['Investment Details:', ''],
+                ['Amount Paid:', f"₹{investment.amount:,.2f}"],
+                ['Shares Purchased:', str(investment.units_purchased)],
+                ['Price per Share:', f"₹{investment.price_per_unit_at_investment:,.2f}"],
+                ['Payment Method:', investment.get_payment_method_display() if investment.payment_method else 'N/A'],
+                ['Transaction ID:', investment.transaction_no or 'N/A'],
+                ['Investment Date:', investment.investment_date.strftime('%B %d, %Y')],
+            ]
+            
+            table = Table(receipt_data, colWidths=[2.5*inch, 4*inch])
+            table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+                ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            
+            elements.append(table)
+            elements.append(Spacer(1, 0.5*inch))
+            
+            # Footer
+            footer_style = ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontSize=8,
+                textColor=colors.grey,
+                alignment=TA_CENTER
+            )
+            
+            elements.append(Paragraph(
+                f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
+                footer_style
+            ))
+            
+            doc.build(elements)
+            
+            # Return PDF
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="receipt-{investment.investment_id}.pdf"'
+            
+            return response
+            
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Receipt not found or not available'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"❌ Error generating receipt: {str(e)}")
+            return Response({
+                'success': False,
+                'message': f'Failed to generate receipt: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReceiptDetailView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/receipt/
+    Get receipt details (same as investment detail but for approved only)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, investment_id):
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                status='approved',
+                is_deleted=False
+            )
+            
+            serializer = InvestmentSerializer(
+                investment, 
+                context={'request': request}
+            )
+            
+            return Response({
+                'success': True,
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Receipt not found'
+            }, status=status.HTTP_404_NOT_FOUND)

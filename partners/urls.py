@@ -37,8 +37,11 @@ from .views import (
     AdminCPApprovalView,
     get_permanent_invite,
     get_invite_signups,
-    send_invite_email
+    send_invite_email,
+    admin_get_cp_leads,
 )
+
+# from . import views
 
 urlpatterns = [
     # ============================================
@@ -93,4 +96,6 @@ urlpatterns = [
     path('permanent-invite/', get_permanent_invite, name='cp-permanent-invite'),
     path('invite-signups/', get_invite_signups, name='cp-invite-signups'),
     path('send-invite-email/', send_invite_email, name='send_invite_email'),
+
+    path('admin/cp/<int:cp_id>/leads/', admin_get_cp_leads, name='admin-cp-leads'),
 ]

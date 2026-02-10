@@ -328,7 +328,26 @@ class AdminCommissionsByCPView(APIView):
             cp = ChannelPartner.objects.select_related('user').get(id=cp_id)
             
             # Get commissions
-            commissions = CommissionService.get_cp_commissions(cp)
+            # commissions = CommissionService.get_cp_commissions(cp)
+             # Get filter if provided
+            
+            
+            # Get commissions
+            commissions = Commission.objects.filter(
+                cp=cp
+            ).select_related(
+                'investment',
+                'investment__customer',
+                'investment__property',
+                'commission_rule',
+                'approved_by',
+                'paid_by'
+            ).order_by('-created_at')
+            
+            # Apply status filter if provided
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                commissions = commissions.filter(status=status_filter)
             
             # Get summary
             summary = CommissionService.get_cp_earnings_summary(cp)
@@ -358,3 +377,10 @@ class AdminCommissionsByCPView(APIView):
                 'success': False,
                 'message': 'Channel Partner not found'
             }, status=status.HTTP_404_NOT_FOUND)
+        
+        except Exception as e:
+            logger.error(f"❌ Error fetching CP commissions: {str(e)}")
+            return Response({
+                'success': False,
+                'message': 'Failed to fetch commissions'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

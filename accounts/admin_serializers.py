@@ -46,6 +46,8 @@ class AdminUserListSerializer(serializers.ModelSerializer):
             'id',
             'phone',
             'email',
+            'first_name',
+            'last_name',
             'username',
             'date_of_birth',
             'is_indian',
@@ -89,6 +91,8 @@ class AdminUserDetailSerializer(serializers.ModelSerializer):
             'id',
             'phone',
             'email',
+            'first_name',
+            'last_name',
             'username',
             'date_of_birth',
             'is_indian',
@@ -283,3 +287,83 @@ class AdminKYCActionSerializer(serializers.Serializer):
                 'rejection_reason': 'Rejection reason is required when rejecting KYC'
             })
         return attrs
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'username',
+            'email',
+            'phone',
+            'date_of_birth',
+            'is_indian',
+            'role',
+            'profile_completed',
+            'kyc_status',
+            'is_verified',
+            'is_suspended',
+            'suspended_reason',
+            'is_blocked',
+            'blocked_reason',
+        ]
+        read_only_fields = ['is_verified', 'is_suspended', 'is_blocked']  # if you want admin-only for these
+
+
+def generate_unique_username(first_name):
+    base_username = first_name.strip().lower().replace(" ", "")
+
+    if not base_username:
+        base_username = "user"
+
+    username = base_username
+    counter = 1
+
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+
+    while User.objects.filter(username=username).exists():
+        username = f"{base_username}_{counter}"
+        counter += 1
+
+    return username
+
+class UserCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'email',
+            'phone',
+        ]
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value
+
+    def validate_phone(self, value):
+        if User.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("Phone number already registered")
+        return value
+
+    def create(self, validated_data):
+        user = User(**validated_data)
+
+        # ✅ Generate username from first_name
+        user.username = generate_unique_username(user.first_name)
+
+        # Password not required
+        user.set_unusable_password()
+
+        # Defaults
+        user.is_active = True
+        user.is_verified = False
+        user.profile_completed = False
+
+        user.save()
+        return user

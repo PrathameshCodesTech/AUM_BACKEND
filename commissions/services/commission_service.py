@@ -27,6 +27,10 @@ class CommissionService:
             Commission instance or None
         """
         # Get CP who should receive commission (uses priority logic)
+
+        from commissions.models import Commission
+        from partners.models import CommissionRule, CPCommissionRule
+        
         cp = investment.get_commission_cp()
         
         if not cp:

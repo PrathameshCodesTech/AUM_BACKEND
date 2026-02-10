@@ -5,7 +5,7 @@ from django.utils.safestring import mark_safe
 from django.utils import timezone
 from django.urls import reverse
 from django.db.models import Sum, Count, Q
-from decimal import Decimal
+from decimal import Decimal,InvalidOperation
 from .models import (
     Wallet, Transaction, Investment, InvestmentUnit,
     Payout, RedemptionRequest
@@ -131,12 +131,13 @@ class TransactionInline(admin.TabularInline):
         """Display amount with currency"""
         color = '#28a745' if obj.transaction_type == 'credit' else '#dc3545'
         sign = '+' if obj.transaction_type == 'credit' else '-'
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{} ₹{:,.2f}</span>',
-            color,
-            sign,
-            obj.amount
-        )
+        try:
+            amount = Decimal(obj.amount)
+            formatted = f'{sign} ₹{amount:,.2f}'
+            return mark_safe(f'<span style="color: {color}; font-weight: bold;">{formatted}</span>')
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     amount_display.short_description = 'Amount'
 
     def has_add_permission(self, request, obj=None):
@@ -220,27 +221,36 @@ class WalletAdmin(admin.ModelAdmin):
 
     def balance_display(self, obj):
         """Display balance with currency formatting"""
-        return format_html(
-            '<strong style="color: #007bff; font-size: 14px;">₹ {:,.2f}</strong>',
-            obj.balance
-        )
+        try:
+            balance = Decimal(obj.balance)
+            formatted = f'₹ {balance:,.2f}'
+            return mark_safe(f'<strong style="color: #007bff; font-size: 14px;">{formatted}</strong>')
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     balance_display.short_description = 'Available Balance'
     balance_display.admin_order_field = 'balance'
 
     def ledger_balance_display(self, obj):
         """Display ledger balance"""
-        return format_html('₹ {:,.2f}', obj.ledger_balance)
+        try:
+            balance = Decimal(obj.ledger_balance)
+            formatted = f'₹ {balance:,.2f}'
+            return mark_safe(formatted)
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     ledger_balance_display.short_description = 'Ledger Balance'
     ledger_balance_display.admin_order_field = 'ledger_balance'
 
     def status_badge(self, obj):
         """Display wallet status"""
         if obj.is_blocked:
-            return format_html('<span style="color: #dc3545;">🚫 Blocked</span>')
+            return mark_safe('<span style="color: #dc3545;">🚫 Blocked</span>')
         elif obj.is_active:
-            return format_html('<span style="color: #28a745;">✓ Active</span>')
+            return mark_safe('<span style="color: #28a745;">✓ Active</span>')
         else:
-            return format_html('<span style="color: #999;">○ Inactive</span>')
+            return mark_safe('<span style="color: #999;">○ Inactive</span>')
     status_badge.short_description = 'Status'
 
     def transaction_count(self, obj):
@@ -438,22 +448,26 @@ class TransactionAdmin(admin.ModelAdmin):
         """Display amount with currency"""
         color = '#28a745' if obj.transaction_type == 'credit' else '#dc3545'
         sign = '+' if obj.transaction_type == 'credit' else '-'
-        return format_html(
-            '<strong style="color: {}; font-size: 13px;">{} ₹ {:,.2f}</strong>',
-            color,
-            sign,
-            obj.amount
-        )
+        try:
+            amount = Decimal(obj.amount)
+            formatted = f'{sign} ₹ {amount:,.2f}'
+            return mark_safe(f'<strong style="color: {color}; font-size: 13px;">{formatted}</strong>')
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     amount_display.short_description = 'Amount'
     amount_display.admin_order_field = 'amount'
 
     def balance_change(self, obj):
         """Show balance before and after"""
-        return format_html(
-            '₹{:,.2f} → ₹{:,.2f}',
-            obj.balance_before,
-            obj.balance_after
-        )
+        try:
+            before = Decimal(obj.balance_before)
+            after = Decimal(obj.balance_after)
+            formatted = f'₹{before:,.2f} → ₹{after:,.2f}'
+            return mark_safe(formatted)
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     balance_change.short_description = 'Balance Change'
 
     def status_badge(self, obj):
@@ -493,7 +507,7 @@ class TransactionAdmin(admin.ModelAdmin):
                 'max-height: 300px; overflow: auto;">{}</pre>',
                 formatted
             )
-        return format_html('<span style="color: #999;">No gateway response</span>')
+        return mark_safe('<span style="color: #999;">No gateway response</span>')
     gateway_response_display.short_description = 'Gateway Response'
 
     # Bulk Actions
@@ -700,10 +714,13 @@ class InvestmentAdmin(admin.ModelAdmin):
 
     def amount_display(self, obj):
         """Display investment amount"""
-        return format_html(
-            '<strong style="color: #007bff;">₹ {:,.2f}</strong>',
-            obj.amount
-        )
+        try:
+            amount = Decimal(obj.amount)
+            formatted = f'₹ {amount:,.2f}'
+            return mark_safe(f'<strong style="color: #007bff;">{formatted}</strong>')
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid amount</span>')
+
     amount_display.short_description = 'Investment Amount'
     amount_display.admin_order_field = 'amount'
 
@@ -722,7 +739,7 @@ class InvestmentAdmin(admin.ModelAdmin):
 
         # Add deleted indicator
         if obj.is_deleted:
-            return format_html(
+            return mark_safe(
                 '<span style="background-color: #000; color: white; padding: 3px 8px; '
                 'border-radius: 3px; font-size: 10px;">🗑️ DELETED</span>'
             )
@@ -739,19 +756,17 @@ class InvestmentAdmin(admin.ModelAdmin):
     def payment_status(self, obj):
         """Display payment completion status"""
         if obj.payment_completed:
-            return format_html('<span style="color: #28a745;">✓ Paid</span>')
-        return format_html('<span style="color: #ffc107;">⏳ Pending</span>')
+            return mark_safe('<span style="color: #28a745;">✓ Paid</span>')
+        return mark_safe('<span style="color: #ffc107;">⏳ Pending</span>')
     payment_status.short_description = 'Payment'
     payment_status.admin_order_field = 'payment_completed'
 
     def referred_by_display(self, obj):
         """Display referring CP"""
         if obj.referred_by_cp:
-            return format_html(
-                '<span style="color: #6f42c1;">✓ {}</span>',
-                obj.referred_by_cp.user.get_full_name() or obj.referred_by_cp.user.username
-            )
-        return format_html('<span style="color: #999;">Direct</span>')
+            name = obj.referred_by_cp.user.get_full_name() or obj.referred_by_cp.user.username
+            return mark_safe(f'<span style="color: #6f42c1;">✓ {name}</span>')
+        return mark_safe('<span style="color: #999;">Direct</span>')
     referred_by_display.short_description = 'Referred By'
 
     # Bulk Actions
@@ -955,10 +970,13 @@ class PayoutAdmin(admin.ModelAdmin):
 
     def amount_display(self, obj):
         """Display payout amount"""
-        return format_html(
-            '<strong style="color: #28a745; font-size: 13px;">₹ {:,.2f}</strong>',
-            obj.amount
-        )
+        try:
+            amount = Decimal(obj.amount)
+            formatted = f'₹ {amount:,.2f}'
+            return mark_safe(f'<strong style="color: #28a745; font-size: 13px;">{formatted}</strong>')
+        except Exception:
+            return mark_safe('<span style="color:#dc3545;">Invalid</span>')
+
     amount_display.short_description = 'Amount'
     amount_display.admin_order_field = 'amount'
 
@@ -970,7 +988,7 @@ class PayoutAdmin(admin.ModelAdmin):
                 obj.period_start.strftime('%b %Y'),
                 obj.period_end.strftime('%b %Y')
             )
-        return format_html('<span style="color: #999;">—</span>')
+        return mark_safe('<span style="color: #999;">—</span>')
     period_display.short_description = 'Period'
 
     def status_badge(self, obj):
@@ -1147,27 +1165,31 @@ class RedemptionRequestAdmin(admin.ModelAdmin):
 
     def requested_amount_display(self, obj):
         """Display requested amount"""
-        html = format_html(
-            '<strong style="color: #007bff;">₹ {:,.2f}</strong>',
-            obj.requested_amount
-        )
+        try:
+            amount = Decimal(obj.requested_amount)
+            formatted = f'₹ {amount:,.2f}'
+            html = f'<strong style="color: #007bff;">{formatted}</strong>'
+        except Exception:
+            html = '<span style="color:#dc3545;">Invalid</span>'
 
         if obj.penalty_amount > 0:
-            html += format_html(
-                '<br><small style="color: #dc3545;">Penalty: ₹{:,.2f}</small>',
-                obj.penalty_amount
-            )
+            try:
+                penalty = Decimal(obj.penalty_amount)
+                penalty_formatted = f'₹{penalty:,.2f}'
+                html += f'<br><small style="color: #dc3545;">Penalty: {penalty_formatted}</small>'
+            except Exception:
+                pass
 
-        return html
+        return mark_safe(html)
     requested_amount_display.short_description = 'Requested Amount'
 
     def lock_in_indicator(self, obj):
         """Display lock-in status"""
         if obj.is_within_lockin:
-            return format_html(
+            return mark_safe(
                 '<span style="color: #dc3545;">🔒 Within Lock-in</span>'
             )
-        return format_html('<span style="color: #28a745;">✓ Free</span>')
+        return mark_safe('<span style="color: #28a745;">✓ Free</span>')
     lock_in_indicator.short_description = 'Lock-in'
 
     def status_badge(self, obj):

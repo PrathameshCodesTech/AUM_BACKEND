@@ -293,6 +293,7 @@ class Investment(TimestampedModel, SoftDeleteModel):
     transaction_no = models.CharField(
         max_length=100,
         blank=True,
+        null=True,
         help_text="Payment gateway transaction ID / POS transaction no."
     )
     
@@ -308,6 +309,7 @@ class Investment(TimestampedModel, SoftDeleteModel):
     cheque_number = models.CharField(
         max_length=50,
         blank=True,
+        null=True,
         help_text="Cheque/Draft number"
     )
     
@@ -319,19 +321,21 @@ class Investment(TimestampedModel, SoftDeleteModel):
     
     bank_name = models.CharField(
         max_length=150,
-        blank=True,
+        blank=True,null=True,
         help_text="Bank name for cheque"
     )
     
     ifsc_code = models.CharField(
         max_length=20,
         blank=True,
+        null=True,
         help_text="Bank IFSC code"
     )
     
     branch_name = models.CharField(
         max_length=150,
         blank=True,
+        null=True,
         help_text="Bank branch name"
     )
     
@@ -341,11 +345,33 @@ class Investment(TimestampedModel, SoftDeleteModel):
         blank=True,
         help_text="Scanned cheque image"
     )
+
+        # 🆕 Partial Payment Fields
+    is_partial_payment = models.BooleanField(default=False)
+    minimum_required_amount = models.DecimalField(
+        max_digits=15, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Total investment amount (full price)"
+    )
+    due_amount = models.DecimalField(
+        max_digits=15, 
+        decimal_places=2, 
+        default=0,
+        help_text="Remaining amount to be paid"
+    )
+    payment_due_date = models.DateField(
+        null=True, 
+        blank=True,
+        help_text="Due date for remaining payment"
+    )
     
     # NEFT / RTGS fields
     neft_rtgs_ref_no = models.CharField(
         max_length=100,
         blank=True,
+        null=True,
         help_text="NEFT / RTGS reference number"
     )
 
