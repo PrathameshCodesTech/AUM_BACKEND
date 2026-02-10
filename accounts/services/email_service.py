@@ -280,12 +280,12 @@ Team AssetKart
                 
                 <p style="font-size: 16px; color: #374151; margin-top: 25px;">
                     Best regards,<br>
-                    <strong>The AUM Capital Team</strong>
+                    <strong>AssetKart Team</strong>
                 </p>
             </div>
             
             <div style="text-align: center; padding: 20px; font-size: 12px; color: #9ca3af;">
-                <p>© 2025 AUM Capital. All rights reserved.</p>
+                <p>© 2025 AssetKart. All rights reserved.</p>
                 <p>This is an automated message, please do not reply to this email.</p>
             </div>
         </div>
@@ -305,10 +305,10 @@ You can track the status of your investment anytime through your dashboard: {das
 If you have any questions or concerns, please reach out to our support team at {support_email}
 
 Best regards,
-The AUM Capital Team
+AssetKart Team
 
 ---
-© 2025 AUM Capital. All rights reserved.
+© 2025 AssetKart. All rights reserved.
 This is an automated message, please do not reply to this email.
         """
     },
@@ -347,7 +347,7 @@ View in Admin Panel: {admin_link}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-This is an automated notification from AUM Capital.
+This is an automated notification from AssetKart.
         """
     },
 
