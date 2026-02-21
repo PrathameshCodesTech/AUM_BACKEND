@@ -863,108 +863,180 @@ class AdminDownloadReceiptView(APIView):
     Download receipt PDF for any approved investment
     """
     permission_classes = [IsAuthenticated, IsAdmin]
-    
+
     def get(self, request, investment_id):
         try:
             investment = Investment.objects.select_related('property', 'customer').get(
                 id=investment_id,
                 status='approved'
             )
-            
-            # Generate PDF receipt (same as user version)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Receipt not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
             from reportlab.lib.units import inch
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.enums import TA_CENTER, TA_RIGHT
             from io import BytesIO
-            from datetime import datetime
-            
+            import os
+            from django.conf import settings
+            from .views import _amount_to_words
+
             buffer = BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4)
+            doc = SimpleDocTemplate(
+                buffer, pagesize=A4,
+                leftMargin=1.2 * inch, rightMargin=1.2 * inch,
+                topMargin=1 * inch, bottomMargin=1 * inch,
+            )
             elements = []
             styles = getSampleStyleSheet()
-            
-            # Title
+
             title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=24,
-                textColor=colors.HexColor('#1a365d'),
-                spaceAfter=30,
-                alignment=TA_CENTER
+                'ReceiptTitle', parent=styles['Normal'],
+                fontSize=16, fontName='Helvetica-Bold',
+                alignment=TA_CENTER, spaceAfter=18, leading=20,
             )
-            
-            elements.append(Paragraph("INVESTMENT RECEIPT", title_style))
-            elements.append(Spacer(1, 0.5*inch))
-            
-            # Receipt details
-            receipt_data = [
-                ['Receipt Number:', investment.investment_id],
-                ['Date:', investment.approved_at.strftime('%B %d, %Y') if investment.approved_at else 'N/A'],
-                ['Status:', 'APPROVED'],
-                ['', ''],
-                ['Customer Details:', ''],
-                ['Name:', investment.customer.get_full_name() or investment.customer.username],
-                ['Email:', investment.customer.email],
-                ['Phone:', investment.customer.phone],
-                ['', ''],
-                ['Property Details:', ''],
-                ['Property Name:', investment.property.name],
-                ['Location:', f"{investment.property.city}, {investment.property.state}"],
-                ['', ''],
-                ['Investment Details:', ''],
-                ['Amount Paid:', f"₹{investment.amount:,.2f}"],
-                ['Units Purchased:', str(investment.units_purchased)],
-                ['Price per Unit:', f"₹{investment.price_per_unit_at_investment:,.2f}"],
-                ['Payment Method:', investment.get_payment_method_display() if investment.payment_method else 'N/A'],
-                ['Transaction ID:', investment.transaction_no or 'N/A'],
-                ['Investment Date:', investment.investment_date.strftime('%B %d, %Y')],
-                ['Approved By:', investment.approved_by.get_full_name() if investment.approved_by else 'N/A'],
-            ]
-            
-            table = Table(receipt_data, colWidths=[2.5*inch, 4*inch])
-            table.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
-                ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ]))
-            
-            elements.append(table)
-            elements.append(Spacer(1, 0.5*inch))
-            
-            # Footer
+            normal_style = ParagraphStyle(
+                'ReceiptNormal', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica', leading=16,
+            )
+            bold_style = ParagraphStyle(
+                'ReceiptBold', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica-Bold', leading=16,
+            )
+            right_style = ParagraphStyle(
+                'ReceiptRight', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica', alignment=TA_RIGHT, leading=16,
+            )
             footer_style = ParagraphStyle(
-                'Footer',
-                parent=styles['Normal'],
-                fontSize=8,
-                textColor=colors.grey,
-                alignment=TA_CENTER
+                'ReceiptFooter', parent=styles['Normal'],
+                fontSize=9, fontName='Helvetica',
+                textColor=colors.HexColor('#555555'), alignment=TA_CENTER,
             )
-            
+
+            # ── Logo ──────────────────────────────────────────────────────
+            logo_path = os.path.join(settings.BASE_DIR, 'assets', 'Alogo.png')
+            if os.path.exists(logo_path):
+                logo = Image(logo_path, width=2.2 * inch, height=0.75 * inch)
+                logo.hAlign = 'CENTER'
+                elements.append(logo)
+                elements.append(Spacer(1, 8))
+
+            # ── Title ─────────────────────────────────────────────────────
+            elements.append(Paragraph("PAYMENT RECEIPT", title_style))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
+
+            # ── Receipt No. + Date ────────────────────────────────────────
+            receipt_date = (
+                investment.approved_at.strftime('%d-%m-%Y')
+                if investment.approved_at else
+                investment.investment_date.strftime('%d-%m-%Y')
+            )
+            header_row = Table(
+                [[
+                    Paragraph(f"Receipt No.: <b>{investment.investment_id}</b>", normal_style),
+                    Paragraph(f"Date: <b>{receipt_date}</b>", normal_style),
+                ]],
+                colWidths=[3.2 * inch, 3.2 * inch],
+            )
+            header_row.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(header_row)
+            elements.append(Spacer(1, 10))
+
+            # ── Received from ─────────────────────────────────────────────
+            customer_name = investment.customer.get_full_name() or investment.customer.username
+            amount_val = investment.amount
+            amount_words = _amount_to_words(amount_val)
+
             elements.append(Paragraph(
-                f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
-                footer_style
+                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> &nbsp;&nbsp; the sum of <b>Rs. {amount_val:,.2f}</b>",
+                normal_style
             ))
-            
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(f"<b>(Rupees {amount_words} Only)</b>", normal_style))
+            elements.append(Spacer(1, 12))
+
+            # ── Towards + Project ─────────────────────────────────────────
+            elements.append(Paragraph(f"<b>Towards:</b> &nbsp; {investment.property.name}", normal_style))
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(f"<b>Project Name:</b> &nbsp; {investment.property.name}", normal_style))
+            elements.append(Spacer(1, 16))
+
+            # ── Payment Details Table ─────────────────────────────────────
+            method_map = {
+                'ONLINE': 'Online / UPI',
+                'POS': 'POS',
+                'DRAFT_CHEQUE': 'Cheque',
+                'NEFT_RTGS': 'NEFT / RTGS',
+            }
+            payment_method_display = method_map.get(
+                investment.payment_method,
+                investment.get_payment_method_display() if investment.payment_method else 'N/A'
+            )
+
+            if investment.payment_method == 'DRAFT_CHEQUE':
+                ref_no = investment.cheque_number or 'N/A'
+            elif investment.payment_method == 'NEFT_RTGS':
+                ref_no = investment.neft_rtgs_ref_no or investment.transaction_no or 'N/A'
+            else:
+                ref_no = investment.transaction_no or 'N/A'
+
+            if investment.payment_method == 'DRAFT_CHEQUE' and investment.cheque_date:
+                txn_dated = investment.cheque_date.strftime('%d-%m-%Y')
+            elif investment.payment_date:
+                txn_dated = investment.payment_date.strftime('%d-%m-%Y') if hasattr(investment.payment_date, 'strftime') else str(investment.payment_date)
+            else:
+                txn_dated = receipt_date
+
+            label_bg = colors.HexColor('#f0f0f0')
+            payment_table_data = [
+                [Paragraph('<b>Mode of Payment</b>', normal_style),
+                 Paragraph(payment_method_display, normal_style)],
+                [Paragraph('<b>Transaction / Reference No.</b>', normal_style),
+                 Paragraph(ref_no, normal_style)],
+                [Paragraph('<b>Dated</b>', normal_style),
+                 Paragraph(txn_dated, normal_style)],
+            ]
+            payment_table = Table(payment_table_data, colWidths=[2.5 * inch, 3.9 * inch])
+            payment_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), label_bg),
+                ('BOX', (0, 0), (-1, -1), 0.75, colors.black),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(payment_table)
+            elements.append(Spacer(1, 20))
+
+            # ── Acknowledgement ───────────────────────────────────────────
+            elements.append(Paragraph(
+                "This receipt is issued as an acknowledgement of payment received.",
+                normal_style
+            ))
+            elements.append(Spacer(1, 40))
+
+            # ── Footer ────────────────────────────────────────────────────
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#aaaaaa'), spaceAfter=8))
+            elements.append(Paragraph("Powered by AssetKart", footer_style))
+
             doc.build(elements)
-            
-            # Return PDF
             buffer.seek(0)
             response = HttpResponse(buffer, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="receipt-{investment.investment_id}.pdf"'
-            
             return response
-            
-        except Investment.DoesNotExist:
-            return Response({
-                'success': False,
-                'message': 'Receipt not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+
         except Exception as e:
             logger.error(f"❌ Error generating receipt: {str(e)}")
             return Response({
@@ -1152,10 +1224,12 @@ class AdminDownloadPaymentReceiptView(APIView):
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
             from reportlab.lib.units import inch
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.enums import TA_CENTER, TA_RIGHT
             from io import BytesIO
+            import os
+            from django.conf import settings
 
             buffer = BytesIO()
             doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -1176,6 +1250,14 @@ class AdminDownloadPaymentReceiptView(APIView):
             footer_style = ParagraphStyle('F', parent=styles['Normal'], fontSize=8,
                                           fontName='Helvetica', alignment=TA_CENTER,
                                           textColor=colors.HexColor('#888888'))
+
+            # ── Logo ──────────────────────────────────────────────────────
+            logo_path = os.path.join(settings.BASE_DIR, 'assets', 'Alogo.png')
+            if os.path.exists(logo_path):
+                logo = Image(logo_path, width=2.2 * inch, height=0.75 * inch)
+                logo.hAlign = 'CENTER'
+                elements.append(logo)
+                elements.append(Spacer(1, 8))
 
             elements.append(Paragraph("PAYMENT RECEIPT", title_style))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
@@ -1234,7 +1316,6 @@ class AdminDownloadPaymentReceiptView(APIView):
                 ['Mode of Payment', method_display],
                 ['Transaction / Reference No.', ref_value],
                 ['Dated', dated_value],
-                ['Bank', bank_value],
             ]
             pt = Table(payment_table_data, colWidths=[2.8 * inch, 4.2 * inch])
             pt.setStyle(TableStyle([

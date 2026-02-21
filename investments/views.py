@@ -738,11 +738,13 @@ class DownloadReceiptView(APIView):
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
             from reportlab.lib.units import inch, mm
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
             from io import BytesIO
             from datetime import datetime
+            import os
+            from django.conf import settings
 
             buffer = BytesIO()
             doc = SimpleDocTemplate(
@@ -789,6 +791,14 @@ class DownloadReceiptView(APIView):
                 alignment=TA_CENTER,
             )
 
+            # ── Logo ─────────────────────────────────────────────────────────
+            logo_path = os.path.join(settings.BASE_DIR, 'assets', 'Alogo.png')
+            if os.path.exists(logo_path):
+                logo = Image(logo_path, width=2.2 * inch, height=0.75 * inch)
+                logo.hAlign = 'CENTER'
+                elements.append(logo)
+                elements.append(Spacer(1, 8))
+
             # ── Title ────────────────────────────────────────────────────────
             elements.append(Paragraph("PAYMENT RECEIPT", title_style))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
@@ -821,7 +831,7 @@ class DownloadReceiptView(APIView):
             amount_words = _amount_to_words(amount_val)
 
             elements.append(Paragraph(
-                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> &nbsp;&nbsp; the sum of <b>&#8377; {amount_val:,.2f}</b>",
+                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> &nbsp;&nbsp; the sum of <b>Rs. {amount_val:,.2f}</b>",
                 normal_style
             ))
             elements.append(Spacer(1, 4))
@@ -843,65 +853,62 @@ class DownloadReceiptView(APIView):
             ))
             elements.append(Spacer(1, 16))
 
-            # ── Payment Details Table ─────────────────────────────────────────
-            # Resolve payment method display
+            # ── Payment Details Table (only for All Investments tab) ─────────────
+            source = request.GET.get('source', 'all')
+
             method_map = {
                 'ONLINE': 'Online / UPI',
                 'POS': 'POS',
                 'DRAFT_CHEQUE': 'Cheque',
                 'NEFT_RTGS': 'NEFT / RTGS',
             }
-            payment_method_display = method_map.get(
-                investment.payment_method,
-                investment.get_payment_method_display() if investment.payment_method else 'N/A'
-            )
 
-            # Resolve transaction / reference number
-            if investment.payment_method == 'DRAFT_CHEQUE':
-                ref_no = investment.cheque_number or 'N/A'
-            elif investment.payment_method == 'NEFT_RTGS':
-                ref_no = investment.neft_rtgs_ref_no or investment.transaction_no or 'N/A'
-            else:
-                ref_no = investment.transaction_no or 'N/A'
+            if source != 'transaction':
+                # All Investments tab: show single payment details table
+                payment_method_display = method_map.get(
+                    investment.payment_method,
+                    investment.get_payment_method_display() if investment.payment_method else 'N/A'
+                )
 
-            # Resolve dated
-            if investment.payment_method == 'DRAFT_CHEQUE' and investment.cheque_date:
-                txn_dated = investment.cheque_date.strftime('%d-%m-%Y')
-            elif investment.payment_date:
-                txn_dated = investment.payment_date.strftime('%d-%m-%Y') if hasattr(investment.payment_date, 'strftime') else str(investment.payment_date)
-            else:
-                txn_dated = receipt_date
+                if investment.payment_method == 'DRAFT_CHEQUE':
+                    ref_no = investment.cheque_number or 'N/A'
+                elif investment.payment_method == 'NEFT_RTGS':
+                    ref_no = investment.neft_rtgs_ref_no or investment.transaction_no or 'N/A'
+                else:
+                    ref_no = investment.transaction_no or 'N/A'
 
-            # Resolve bank
-            bank_name = investment.bank_name if investment.payment_method == 'DRAFT_CHEQUE' else 'N/A'
+                if investment.payment_method == 'DRAFT_CHEQUE' and investment.cheque_date:
+                    txn_dated = investment.cheque_date.strftime('%d-%m-%Y')
+                elif investment.payment_date:
+                    txn_dated = investment.payment_date.strftime('%d-%m-%Y') if hasattr(investment.payment_date, 'strftime') else str(investment.payment_date)
+                else:
+                    txn_dated = receipt_date
 
-            label_bg = colors.HexColor('#f0f0f0')
-            border_color = colors.black
+                label_bg = colors.HexColor('#f0f0f0')
+                border_color = colors.black
 
-            payment_table_data = [
-                [Paragraph('<b>Mode of Payment</b>', normal_style),
-                 Paragraph(payment_method_display, normal_style)],
-                [Paragraph('<b>Transaction / Reference No.</b>', normal_style),
-                 Paragraph(ref_no, normal_style)],
-                [Paragraph('<b>Dated</b>', normal_style),
-                 Paragraph(txn_dated, normal_style)],
-                [Paragraph('<b>Bank</b>', normal_style),
-                 Paragraph(bank_name, normal_style)],
-            ]
+                payment_table_data = [
+                    [Paragraph('<b>Mode of Payment</b>', normal_style),
+                     Paragraph(payment_method_display, normal_style)],
+                    [Paragraph('<b>Transaction / Reference No.</b>', normal_style),
+                     Paragraph(ref_no, normal_style)],
+                    [Paragraph('<b>Dated</b>', normal_style),
+                     Paragraph(txn_dated, normal_style)],
+                ]
 
-            payment_table = Table(payment_table_data, colWidths=[2.5 * inch, 3.9 * inch])
-            payment_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), label_bg),
-                ('BOX', (0, 0), (-1, -1), 0.75, border_color),
-                ('INNERGRID', (0, 0), (-1, -1), 0.5, border_color),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 8),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-            ]))
-            elements.append(payment_table)
-            elements.append(Spacer(1, 20))
+                payment_table = Table(payment_table_data, colWidths=[2.5 * inch, 3.9 * inch])
+                payment_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), label_bg),
+                    ('BOX', (0, 0), (-1, -1), 0.75, border_color),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.5, border_color),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ]))
+                elements.append(payment_table)
+                elements.append(Spacer(1, 20))
 
             # ── Acknowledgement text ──────────────────────────────────────────
             elements.append(Paragraph(
@@ -1118,10 +1125,12 @@ class DownloadPaymentReceiptView(APIView):
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
             from reportlab.lib.units import inch
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
             from io import BytesIO
+            import os
+            from django.conf import settings
 
             buffer = BytesIO()
             doc = SimpleDocTemplate(
@@ -1157,6 +1166,14 @@ class DownloadPaymentReceiptView(APIView):
                 fontSize=8, fontName='Helvetica',
                 alignment=TA_CENTER, textColor=colors.HexColor('#888888'),
             )
+
+            # ── Logo ───────────────────────────────────────────────────────
+            logo_path = os.path.join(settings.BASE_DIR, 'assets', 'Alogo.png')
+            if os.path.exists(logo_path):
+                logo = Image(logo_path, width=2.2 * inch, height=0.75 * inch)
+                logo.hAlign = 'CENTER'
+                elements.append(logo)
+                elements.append(Spacer(1, 8))
 
             # ── Title ──────────────────────────────────────────────────────
             elements.append(Paragraph("PAYMENT RECEIPT", title_style))
@@ -1226,7 +1243,6 @@ class DownloadPaymentReceiptView(APIView):
                 ['Mode of Payment', method_display],
                 ['Transaction / Reference No.', ref_value],
                 ['Dated', dated_value],
-                ['Bank', bank_value],
             ]
             payment_table = Table(payment_table_data, colWidths=[2.8 * inch, 4.2 * inch])
             payment_table.setStyle(TableStyle([
