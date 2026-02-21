@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.validators import MinValueValidator, MaxValueValidator
 from accounts.models import User, TimestampedModel, SoftDeleteModel
 from django.utils import timezone
+from django.conf import settings
 from datetime import timedelta
 from rest_framework import serializers
 
@@ -565,7 +566,7 @@ class CPPropertyAuthorization(TimestampedModel):
         Format: https://assetkart.com/property/{property_id}?ref={cp_code}
         """
         if not self.referral_link:
-            base_url = "https://assetkart.com"  # Replace with actual domain
+            base_url = getattr(settings, 'FRONTEND_BASE_URL', 'https://app.assetkart.com')
             self.referral_link = f"{base_url}/property/{self.property.id}?ref={self.cp.cp_code}"
             self.save()
         return self.referral_link

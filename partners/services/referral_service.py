@@ -57,7 +57,7 @@ class ReferralService:
         Returns:
             str: Referral link
         """
-        base_url = 'https://app.assetkart.com'
+        base_url = getattr(settings, 'FRONTEND_BASE_URL', 'https://app.assetkart.com')
         
         # Format: /signup?ref={cp_code}
         link = f"{base_url}/signup?ref={cp_code}"

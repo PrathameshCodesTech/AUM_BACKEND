@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from django.db import transaction
 from django.utils import timezone
+from django.conf import settings
 from accounts.models import User, Role
 from rest_framework.decorators import api_view, permission_classes
 
@@ -766,7 +767,7 @@ def admin_create_permanent_invite(request, cp_id):
                 'error': 'CP already has a permanent invite',
                 'data': {
                     'invite_code': existing.invite_code,
-                    'invite_link': f"http://localhost:5173/signup?invite={existing.invite_code}"
+                    'invite_link': f"{settings.FRONTEND_BASE_URL}/signup?invite={existing.invite_code}"
                 }
             }, status=status.HTTP_400_BAD_REQUEST)
         

@@ -991,8 +991,7 @@ def send_invite_email(request):
         }, status=status.HTTP_404_NOT_FOUND)
     
     # Generate invite link (frontend URL)
-    #invite_link = f"http://localhost:5173/signup?invite={invite.invite_code}"
-    invite_link = f"https://app.assetkart.com/signup?invite={invite.invite_code}"
+    invite_link = f"{settings.FRONTEND_BASE_URL}/signup?invite={invite.invite_code}"
     # Get CP name
     cp_name = request.user.get_full_name() or request.user.username or f"Channel Partner {cp.cp_code}"
     
