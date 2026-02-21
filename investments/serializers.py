@@ -1,6 +1,6 @@
 # investments/serializers.py
 from rest_framework import serializers
-from .models import Wallet, Transaction, Investment
+from .models import Wallet, Transaction, Investment, InvestmentPayment
 from properties.models import Property
 from accounts.models import User
 
@@ -217,6 +217,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
         read_only=True
     )
     payment_due_date = serializers.DateField(read_only=True)
+    instalment_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Investment
@@ -281,6 +282,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'minimum_required_amount',
             'due_amount',
             'payment_due_date',
+            'instalment_count',
         ]
         read_only_fields = [
             'investment_id',
@@ -293,6 +295,9 @@ class InvestmentSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
     
+    def get_instalment_count(self, obj):
+        return obj.instalment_payments.count()
+
     def get_property(self, obj):
         """Return property details matching PropertyCard expectations"""
         property_obj = obj.property
@@ -618,5 +623,82 @@ class CreateInvestmentSerializer(serializers.Serializer):
         
         # Store property object for later use
         data['property'] = property_obj
-        
+
+        return data
+
+
+# ============================================
+# INVESTMENT PAYMENT (INSTALMENTS) SERIALIZERS
+# ============================================
+
+class InvestmentPaymentSerializer(serializers.ModelSerializer):
+    """Read serializer for InvestmentPayment (instalments)"""
+
+    payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
+    payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
+    approved_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InvestmentPayment
+        fields = [
+            'id', 'payment_id', 'payment_number',
+            'amount', 'due_amount_before', 'due_amount_after',
+            'payment_method', 'payment_method_display',
+            'payment_status', 'payment_status_display',
+            'payment_date', 'payment_notes', 'payment_mode',
+            'transaction_no', 'cheque_number', 'cheque_date',
+            'bank_name', 'ifsc_code', 'branch_name',
+            'neft_rtgs_ref_no',
+            'payment_approved_at', 'payment_rejection_reason',
+            'approved_by_name', 'created_at',
+        ]
+
+    def get_approved_by_name(self, obj):
+        if obj.payment_approved_by:
+            return obj.payment_approved_by.get_full_name() or obj.payment_approved_by.username
+        return None
+
+
+class CreateRemainingPaymentSerializer(serializers.Serializer):
+    """Serializer for submitting a remaining (instalment) payment"""
+
+    amount = serializers.DecimalField(max_digits=15, decimal_places=2, required=True)
+    payment_method = serializers.ChoiceField(
+        choices=['ONLINE', 'POS', 'DRAFT_CHEQUE', 'NEFT_RTGS'], required=True
+    )
+    payment_date = serializers.DateTimeField(required=True)
+    payment_notes = serializers.CharField(required=False, allow_blank=True)
+    payment_mode  = serializers.CharField(required=False, allow_blank=True)
+    transaction_no = serializers.CharField(required=False, allow_blank=True)
+    pos_slip_image  = serializers.ImageField(required=False, allow_null=True)
+    cheque_number   = serializers.CharField(required=False, allow_blank=True)
+    cheque_date     = serializers.DateField(required=False, allow_null=True)
+    bank_name       = serializers.CharField(required=False, allow_blank=True)
+    ifsc_code       = serializers.CharField(required=False, allow_blank=True)
+    branch_name     = serializers.CharField(required=False, allow_blank=True)
+    cheque_image    = serializers.ImageField(required=False, allow_null=True)
+    neft_rtgs_ref_no = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than 0")
+        return value
+
+    def validate(self, data):
+        method = data.get('payment_method')
+        if method in ['ONLINE', 'POS'] and not data.get('transaction_no'):
+            raise serializers.ValidationError(
+                {'transaction_no': 'Transaction number is required for ONLINE/POS payments'}
+            )
+        if method == 'DRAFT_CHEQUE':
+            missing = [f for f in ['cheque_number', 'cheque_date', 'bank_name', 'ifsc_code', 'branch_name']
+                       if not data.get(f)]
+            if missing:
+                raise serializers.ValidationError(
+                    {f: f'{f.replace("_", " ").title()} is required for cheque payment' for f in missing}
+                )
+        if method == 'NEFT_RTGS' and not data.get('neft_rtgs_ref_no'):
+            raise serializers.ValidationError(
+                {'neft_rtgs_ref_no': 'NEFT/RTGS reference number is required'}
+            )
         return data

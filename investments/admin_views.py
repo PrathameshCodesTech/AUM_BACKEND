@@ -970,7 +970,372 @@ class AdminDownloadReceiptView(APIView):
             return Response({
                 'success': False,
                 'message': f'Failed to generate receipt: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)      
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+# ============================================================
+# ADMIN — INSTALMENT PAYMENT MANAGEMENT
+# ============================================================
+
+class AdminInvestmentPaymentsView(APIView):
+    """
+    GET /api/admin/investments/{investment_id}/payments/
+    List all instalment payments for an investment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, investment_id):
+        from .models import InvestmentPayment
+        from .serializers import InvestmentPaymentSerializer
+
+        try:
+            investment = Investment.objects.select_related('customer', 'property').get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        payments = investment.instalment_payments.select_related('payment_approved_by').order_by('payment_number', 'created_at')
+        serializer = InvestmentPaymentSerializer(payments, many=True)
+
+        return Response({
+            'success': True,
+            'investment_id': investment.investment_id,
+            'customer': investment.customer.get_full_name() or investment.customer.username,
+            'property': investment.property.name,
+            'total_commitment': str(investment.minimum_required_amount),
+            'amount_paid': str(investment.amount),
+            'due_amount': str(investment.due_amount),
+            'data': serializer.data,
+            'count': payments.count(),
+        }, status=status.HTTP_200_OK)
+
+
+class AdminApprovePaymentView(APIView):
+    """
+    POST /api/admin/investments/{investment_id}/payments/{payment_id}/approve/
+    Approve an instalment payment — deducts due_amount from the investment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, investment_id, payment_id):
+        from .models import InvestmentPayment
+        from .serializers import InvestmentPaymentSerializer
+        from django.db import transaction
+
+        try:
+            investment = Investment.objects.select_for_update().get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payment = InvestmentPayment.objects.select_for_update().get(
+                id=payment_id, investment=investment
+            )
+        except InvestmentPayment.DoesNotExist:
+            return Response({'success': False, 'message': 'Payment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if payment.payment_status != 'PENDING':
+            return Response({'success': False, 'message': f'Payment is already {payment.payment_status}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            from django.utils import timezone
+            payment.payment_status = 'VERIFIED'
+            payment.payment_approved_by = request.user
+            payment.payment_approved_at = timezone.now()
+            payment.save(update_fields=['payment_status', 'payment_approved_by', 'payment_approved_at'])
+
+            # Reduce investment due_amount
+            from decimal import Decimal
+            new_due = max(Decimal('0'), investment.due_amount - payment.amount)
+            investment.due_amount = new_due
+            # Update amount paid on investment
+            investment.amount = investment.amount + payment.amount
+            if new_due == 0:
+                investment.is_partial_payment = False
+            investment.save(update_fields=['due_amount', 'amount', 'is_partial_payment'])
+
+        logger.info(f"✅ Admin {request.user.username} approved payment {payment.payment_id} "
+                    f"for investment {investment.investment_id}. New due: ₹{new_due}")
+
+        return Response({
+            'success': True,
+            'message': f'Payment {payment.payment_id} approved successfully.',
+            'new_due_amount': str(new_due),
+            'data': InvestmentPaymentSerializer(payment).data,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminRejectPaymentView(APIView):
+    """
+    POST /api/admin/investments/{investment_id}/payments/{payment_id}/reject/
+    Reject an instalment payment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, investment_id, payment_id):
+        from .models import InvestmentPayment
+        from .serializers import InvestmentPaymentSerializer
+
+        try:
+            investment = Investment.objects.get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payment = InvestmentPayment.objects.get(id=payment_id, investment=investment)
+        except InvestmentPayment.DoesNotExist:
+            return Response({'success': False, 'message': 'Payment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if payment.payment_status != 'PENDING':
+            return Response({'success': False, 'message': f'Payment is already {payment.payment_status}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        reason = request.data.get('reason', '')
+        from django.utils import timezone
+        payment.payment_status = 'FAILED'
+        payment.payment_rejection_reason = reason
+        payment.payment_approved_by = request.user
+        payment.payment_approved_at = timezone.now()
+        payment.save(update_fields=['payment_status', 'payment_rejection_reason',
+                                    'payment_approved_by', 'payment_approved_at'])
+
+        logger.info(f"❌ Admin {request.user.username} rejected payment {payment.payment_id}")
+
+        return Response({
+            'success': True,
+            'message': f'Payment {payment.payment_id} rejected.',
+            'data': InvestmentPaymentSerializer(payment).data,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminDownloadPaymentReceiptView(APIView):
+    """
+    GET /api/admin/investments/{investment_id}/payments/{payment_id}/receipt/download/
+    Download PDF receipt for a verified instalment payment (admin side).
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, investment_id, payment_id):
+        from .models import InvestmentPayment
+        from .views import _amount_to_words
+
+        try:
+            investment = Investment.objects.select_related('property', 'customer').get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payment = InvestmentPayment.objects.get(
+                id=payment_id,
+                investment=investment,
+                payment_status='VERIFIED',
+            )
+        except InvestmentPayment.DoesNotExist:
+            return Response({'success': False, 'message': 'Receipt not found or payment not verified'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+            from io import BytesIO
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                    leftMargin=1.2 * inch, rightMargin=1.2 * inch,
+                                    topMargin=1 * inch, bottomMargin=1 * inch)
+            elements = []
+            styles = getSampleStyleSheet()
+
+            title_style = ParagraphStyle('T', parent=styles['Normal'], fontSize=16,
+                                         fontName='Helvetica-Bold', alignment=TA_CENTER,
+                                         spaceAfter=18, leading=20)
+            normal_style = ParagraphStyle('N', parent=styles['Normal'], fontSize=10,
+                                          fontName='Helvetica', leading=16)
+            bold_style = ParagraphStyle('B', parent=styles['Normal'], fontSize=10,
+                                        fontName='Helvetica-Bold', leading=16)
+            right_style = ParagraphStyle('R', parent=styles['Normal'], fontSize=10,
+                                         fontName='Helvetica', alignment=TA_RIGHT, leading=16)
+            footer_style = ParagraphStyle('F', parent=styles['Normal'], fontSize=8,
+                                          fontName='Helvetica', alignment=TA_CENTER,
+                                          textColor=colors.HexColor('#888888'))
+
+            elements.append(Paragraph("PAYMENT RECEIPT", title_style))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
+
+            approved_date = payment.payment_approved_at or payment.created_at
+            receipt_date = approved_date.strftime('%d-%m-%Y')
+
+            meta_data = [[
+                Paragraph(f'<b>Receipt No.:</b> {payment.payment_id}', bold_style),
+                Paragraph(f'<b>Date:</b> {receipt_date}', right_style),
+            ]]
+            meta_table = Table(meta_data, colWidths=[3.5 * inch, 3.5 * inch])
+            meta_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(meta_table)
+            elements.append(Spacer(1, 14))
+
+            customer = investment.customer
+            customer_name = customer.get_full_name() or customer.username
+            amount_words = _amount_to_words(int(payment.amount))
+            amount_formatted = f"₹{payment.amount:,.2f}"
+
+            elements.append(Paragraph(
+                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> the sum of <b>{amount_formatted}</b>",
+                normal_style
+            ))
+            elements.append(Paragraph(f"(Rupees {amount_words} only)", normal_style))
+            elements.append(Spacer(1, 10))
+
+            property_name = investment.property.name
+            elements.append(Paragraph(f"<b>Towards:</b> {property_name}", normal_style))
+            elements.append(Paragraph(f"<b>Project Name:</b> {property_name}", normal_style))
+            elements.append(Paragraph(f"<b>Instalment No.:</b> {payment.payment_number}", normal_style))
+            elements.append(Spacer(1, 14))
+
+            if payment.payment_method in ('ONLINE', 'POS'):
+                ref_value = payment.transaction_no or 'N/A'
+                dated_value = payment.payment_date.strftime('%d-%m-%Y') if payment.payment_date else 'N/A'
+                bank_value = payment.payment_mode or 'N/A'
+            elif payment.payment_method == 'DRAFT_CHEQUE':
+                ref_value = payment.cheque_number or 'N/A'
+                dated_value = payment.cheque_date.strftime('%d-%m-%Y') if payment.cheque_date else 'N/A'
+                bank_value = payment.bank_name or 'N/A'
+            elif payment.payment_method == 'NEFT_RTGS':
+                ref_value = payment.neft_rtgs_ref_no or 'N/A'
+                dated_value = payment.payment_date.strftime('%d-%m-%Y') if payment.payment_date else 'N/A'
+                bank_value = payment.bank_name or 'N/A'
+            else:
+                ref_value = dated_value = bank_value = 'N/A'
+
+            method_display = payment.get_payment_method_display() if payment.payment_method else 'N/A'
+            payment_table_data = [
+                ['Mode of Payment', method_display],
+                ['Transaction / Reference No.', ref_value],
+                ['Dated', dated_value],
+                ['Bank', bank_value],
+            ]
+            pt = Table(payment_table_data, colWidths=[2.8 * inch, 4.2 * inch])
+            pt.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f5f5f5')),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(pt)
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph(
+                "This receipt is issued as an acknowledgement of payment received.", normal_style
+            ))
+            elements.append(Spacer(1, 40))
+            elements.append(HRFlowable(width="100%", thickness=0.5,
+                                       color=colors.HexColor('#aaaaaa'), spaceAfter=8))
+            elements.append(Paragraph("Powered by AssetKart", footer_style))
+
+            doc.build(elements)
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="receipt-{payment.payment_id}.pdf"'
+            return response
+
+        except Exception as e:
+            logger.error(f"❌ Error generating payment receipt: {str(e)}")
+            return Response({'success': False, 'message': f'Failed to generate receipt: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AdminAddInstalmentPaymentView(APIView):
+    """
+    POST /api/admin/investments/{investment_id}/add-payment/
+    Admin submits an instalment payment on behalf of any customer.
+    Same logic as the user-side PayRemainingView but without user ownership check.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, investment_id):
+        from .models import InvestmentPayment
+        from .serializers import CreateRemainingPaymentSerializer, InvestmentPaymentSerializer
+        from decimal import Decimal
+
+        try:
+            investment = Investment.objects.select_related('property', 'customer').get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if investment.due_amount <= 0:
+            return Response({'success': False, 'message': 'No outstanding due amount for this investment'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CreateRemainingPaymentSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({'success': False, 'errors': serializer.errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        pay_amount = Decimal(str(data['amount']))
+
+        if pay_amount > investment.due_amount:
+            return Response({
+                'success': False,
+                'message': f'Amount ₹{pay_amount} exceeds outstanding due ₹{investment.due_amount}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        existing_count = investment.instalment_payments.count()
+        payment_number = existing_count + 2
+
+        due_before = investment.due_amount
+        due_after = due_before - pay_amount
+
+        payment = InvestmentPayment.objects.create(
+            payment_id=InvestmentPayment.generate_payment_id(),
+            investment=investment,
+            payment_number=payment_number,
+            amount=pay_amount,
+            due_amount_before=due_before,
+            due_amount_after=due_after,
+            payment_method=data.get('payment_method', ''),
+            payment_status='PENDING',
+            payment_date=data.get('payment_date'),
+            payment_notes=data.get('payment_notes', ''),
+            payment_mode=data.get('payment_mode', ''),
+            transaction_no=data.get('transaction_no', ''),
+            pos_slip_image=data.get('pos_slip_image'),
+            cheque_number=data.get('cheque_number', ''),
+            cheque_date=data.get('cheque_date'),
+            bank_name=data.get('bank_name', ''),
+            ifsc_code=data.get('ifsc_code', ''),
+            branch_name=data.get('branch_name', ''),
+            cheque_image=data.get('cheque_image'),
+            neft_rtgs_ref_no=data.get('neft_rtgs_ref_no', ''),
+        )
+
+        logger.info(f"✅ Admin {request.user.username} added instalment payment "
+                    f"{payment.payment_id} for investment {investment.investment_id}")
+
+        return Response({
+            'success': True,
+            'message': 'Instalment payment added. Approve it to update the due amount.',
+            'data': InvestmentPaymentSerializer(payment).data,
+        }, status=status.HTTP_201_CREATED)
 
 

@@ -680,110 +680,247 @@ class InvestmentReceiptsView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _amount_to_words(amount):
+    """Convert a number to Indian currency words (e.g. 125000 -> 'One Lakh Twenty Five Thousand')"""
+    ones = [
+        '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+        'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+        'Seventeen', 'Eighteen', 'Nineteen'
+    ]
+    tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety']
+
+    def words_below_100(n):
+        if n < 20:
+            return ones[n]
+        return tens[n // 10] + ((' ' + ones[n % 10]) if n % 10 != 0 else '')
+
+    def words_below_1000(n):
+        if n < 100:
+            return words_below_100(n)
+        return ones[n // 100] + ' Hundred' + ((' ' + words_below_100(n % 100)) if n % 100 != 0 else '')
+
+    amount = int(amount)
+    if amount == 0:
+        return 'Zero'
+
+    result = ''
+    if amount >= 10000000:
+        result += words_below_1000(amount // 10000000) + ' Crore '
+        amount %= 10000000
+    if amount >= 100000:
+        result += words_below_1000(amount // 100000) + ' Lakh '
+        amount %= 100000
+    if amount >= 1000:
+        result += words_below_1000(amount // 1000) + ' Thousand '
+        amount %= 1000
+    if amount > 0:
+        result += words_below_1000(amount)
+
+    return result.strip()
+
+
 class DownloadReceiptView(APIView):
     """
     GET /api/wallet/investments/{investment_id}/receipt/download/
     Download receipt PDF for approved investment
     """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request, investment_id):
         try:
             investment = Investment.objects.select_related('property').get(
                 id=investment_id,
                 customer=request.user,
-                status='approved',  # Only approved investments have receipts
+                status='approved',
                 is_deleted=False
             )
-            
-            # Generate PDF receipt
+
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
-            from reportlab.lib.units import inch
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.units import inch, mm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
             from io import BytesIO
             from datetime import datetime
-            
+
             buffer = BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4)
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=A4,
+                leftMargin=1.2 * inch,
+                rightMargin=1.2 * inch,
+                topMargin=1 * inch,
+                bottomMargin=1 * inch,
+            )
             elements = []
             styles = getSampleStyleSheet()
-            
-            # Title
+
+            # ── Styles ──────────────────────────────────────────────────────
             title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=24,
-                textColor=colors.HexColor('#1a365d'),
-                spaceAfter=30,
-                alignment=TA_CENTER
-            )
-            
-            elements.append(Paragraph("INVESTMENT RECEIPT", title_style))
-            elements.append(Spacer(1, 0.5*inch))
-            
-            # Receipt details
-            receipt_data = [
-                ['Receipt Number:', investment.investment_id],
-                ['Date:', investment.approved_at.strftime('%B %d, %Y') if investment.approved_at else 'N/A'],
-                ['Status:', 'APPROVED'],
-                ['', ''],
-                ['Customer Details:', ''],
-                ['Name:', investment.customer.get_full_name() or investment.customer.username],
-                ['Email:', investment.customer.email],
-                ['Phone:', investment.customer.phone],
-                ['', ''],
-                ['Property Details:', ''],
-                ['Property Name:', investment.property.name],
-                ['Location:', f"{investment.property.city}, {investment.property.state}"],
-                ['', ''],
-                ['Investment Details:', ''],
-                ['Amount Paid:', f"₹{investment.amount:,.2f}"],
-                ['Shares Purchased:', str(investment.units_purchased)],
-                ['Price per Share:', f"₹{investment.price_per_unit_at_investment:,.2f}"],
-                ['Payment Method:', investment.get_payment_method_display() if investment.payment_method else 'N/A'],
-                ['Transaction ID:', investment.transaction_no or 'N/A'],
-                ['Investment Date:', investment.investment_date.strftime('%B %d, %Y')],
-            ]
-            
-            table = Table(receipt_data, colWidths=[2.5*inch, 4*inch])
-            table.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
-                ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ]))
-            
-            elements.append(table)
-            elements.append(Spacer(1, 0.5*inch))
-            
-            # Footer
-            footer_style = ParagraphStyle(
-                'Footer',
+                'ReceiptTitle',
                 parent=styles['Normal'],
-                fontSize=8,
-                textColor=colors.grey,
-                alignment=TA_CENTER
+                fontSize=16,
+                fontName='Helvetica-Bold',
+                alignment=TA_CENTER,
+                spaceAfter=18,
+                leading=20,
             )
-            
+            normal_style = ParagraphStyle(
+                'ReceiptNormal',
+                parent=styles['Normal'],
+                fontSize=10,
+                fontName='Helvetica',
+                leading=16,
+            )
+            bold_style = ParagraphStyle(
+                'ReceiptBold',
+                parent=styles['Normal'],
+                fontSize=10,
+                fontName='Helvetica-Bold',
+                leading=16,
+            )
+            footer_style = ParagraphStyle(
+                'ReceiptFooter',
+                parent=styles['Normal'],
+                fontSize=9,
+                fontName='Helvetica',
+                textColor=colors.HexColor('#555555'),
+                alignment=TA_CENTER,
+            )
+
+            # ── Title ────────────────────────────────────────────────────────
+            elements.append(Paragraph("PAYMENT RECEIPT", title_style))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
+
+            # ── Receipt No. + Date row ────────────────────────────────────────
+            receipt_date = (
+                investment.approved_at.strftime('%d-%m-%Y')
+                if investment.approved_at else
+                investment.investment_date.strftime('%d-%m-%Y')
+            )
+            header_row = Table(
+                [[
+                    Paragraph(f"Receipt No.: <b>{investment.investment_id}</b>", normal_style),
+                    Paragraph(f"Date: <b>{receipt_date}</b>", normal_style),
+                ]],
+                colWidths=[3.2 * inch, 3.2 * inch],
+            )
+            header_row.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(header_row)
+            elements.append(Spacer(1, 10))
+
+            # ── Received from ────────────────────────────────────────────────
+            customer_name = investment.customer.get_full_name() or investment.customer.username
+            amount_val = investment.amount
+            amount_words = _amount_to_words(amount_val)
+
             elements.append(Paragraph(
-                f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
-                footer_style
+                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> &nbsp;&nbsp; the sum of <b>&#8377; {amount_val:,.2f}</b>",
+                normal_style
             ))
-            
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(
+                f"<b>(Rupees {amount_words} Only)</b>",
+                normal_style
+            ))
+            elements.append(Spacer(1, 12))
+
+            # ── Towards + Project Name ────────────────────────────────────────
+            elements.append(Paragraph(
+                f"<b>Towards:</b> &nbsp; {investment.property.name}",
+                normal_style
+            ))
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(
+                f"<b>Project Name:</b> &nbsp; {investment.property.name}",
+                normal_style
+            ))
+            elements.append(Spacer(1, 16))
+
+            # ── Payment Details Table ─────────────────────────────────────────
+            # Resolve payment method display
+            method_map = {
+                'ONLINE': 'Online / UPI',
+                'POS': 'POS',
+                'DRAFT_CHEQUE': 'Cheque',
+                'NEFT_RTGS': 'NEFT / RTGS',
+            }
+            payment_method_display = method_map.get(
+                investment.payment_method,
+                investment.get_payment_method_display() if investment.payment_method else 'N/A'
+            )
+
+            # Resolve transaction / reference number
+            if investment.payment_method == 'DRAFT_CHEQUE':
+                ref_no = investment.cheque_number or 'N/A'
+            elif investment.payment_method == 'NEFT_RTGS':
+                ref_no = investment.neft_rtgs_ref_no or investment.transaction_no or 'N/A'
+            else:
+                ref_no = investment.transaction_no or 'N/A'
+
+            # Resolve dated
+            if investment.payment_method == 'DRAFT_CHEQUE' and investment.cheque_date:
+                txn_dated = investment.cheque_date.strftime('%d-%m-%Y')
+            elif investment.payment_date:
+                txn_dated = investment.payment_date.strftime('%d-%m-%Y') if hasattr(investment.payment_date, 'strftime') else str(investment.payment_date)
+            else:
+                txn_dated = receipt_date
+
+            # Resolve bank
+            bank_name = investment.bank_name if investment.payment_method == 'DRAFT_CHEQUE' else 'N/A'
+
+            label_bg = colors.HexColor('#f0f0f0')
+            border_color = colors.black
+
+            payment_table_data = [
+                [Paragraph('<b>Mode of Payment</b>', normal_style),
+                 Paragraph(payment_method_display, normal_style)],
+                [Paragraph('<b>Transaction / Reference No.</b>', normal_style),
+                 Paragraph(ref_no, normal_style)],
+                [Paragraph('<b>Dated</b>', normal_style),
+                 Paragraph(txn_dated, normal_style)],
+                [Paragraph('<b>Bank</b>', normal_style),
+                 Paragraph(bank_name, normal_style)],
+            ]
+
+            payment_table = Table(payment_table_data, colWidths=[2.5 * inch, 3.9 * inch])
+            payment_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), label_bg),
+                ('BOX', (0, 0), (-1, -1), 0.75, border_color),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, border_color),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(payment_table)
+            elements.append(Spacer(1, 20))
+
+            # ── Acknowledgement text ──────────────────────────────────────────
+            elements.append(Paragraph(
+                "This receipt is issued as an acknowledgement of payment received.",
+                normal_style
+            ))
+            elements.append(Spacer(1, 40))
+
+            # ── Footer ────────────────────────────────────────────────────────
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#aaaaaa'), spaceAfter=8))
+            elements.append(Paragraph("Powered by AssetKart", footer_style))
+
             doc.build(elements)
-            
-            # Return PDF
+
             buffer.seek(0)
             response = HttpResponse(buffer, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="receipt-{investment.investment_id}.pdf"'
-            
             return response
-            
+
         except Investment.DoesNotExist:
             return Response({
                 'success': False,
@@ -828,3 +965,303 @@ class ReceiptDetailView(APIView):
                 'success': False,
                 'message': 'Receipt not found'
             }, status=status.HTTP_404_NOT_FOUND)
+
+
+# ============================================================
+# INSTALMENT / PAY-REMAINING VIEWS
+# ============================================================
+
+class PayRemainingView(APIView):
+    """
+    POST /api/wallet/investments/{investment_id}/pay-remaining/
+    Submit a remaining (instalment) payment for a partial-payment investment.
+    amount can be less than the full due_amount (further partial).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, investment_id):
+        from .serializers import CreateRemainingPaymentSerializer, InvestmentPaymentSerializer
+        from .models import InvestmentPayment
+        from decimal import Decimal
+
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                is_deleted=False,
+            )
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if investment.due_amount <= 0:
+            return Response({'success': False, 'message': 'No outstanding due amount for this investment'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CreateRemainingPaymentSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({'success': False, 'errors': serializer.errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        pay_amount = Decimal(str(data['amount']))
+
+        if pay_amount > investment.due_amount:
+            return Response({
+                'success': False,
+                'message': f'Amount ₹{pay_amount} exceeds outstanding due ₹{investment.due_amount}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Determine payment number (existing payments + 2 because first payment is the investment itself)
+        existing_count = investment.instalment_payments.count()
+        payment_number = existing_count + 2  # 1 = initial investment payment
+
+        due_before = investment.due_amount
+        due_after = due_before - pay_amount
+
+        payment = InvestmentPayment.objects.create(
+            payment_id=InvestmentPayment.generate_payment_id(),
+            investment=investment,
+            payment_number=payment_number,
+            amount=pay_amount,
+            due_amount_before=due_before,
+            due_amount_after=due_after,
+            payment_method=data.get('payment_method', ''),
+            payment_status='PENDING',
+            payment_date=data.get('payment_date'),
+            payment_notes=data.get('payment_notes', ''),
+            payment_mode=data.get('payment_mode', ''),
+            transaction_no=data.get('transaction_no', ''),
+            pos_slip_image=data.get('pos_slip_image'),
+            cheque_number=data.get('cheque_number', ''),
+            cheque_date=data.get('cheque_date'),
+            bank_name=data.get('bank_name', ''),
+            ifsc_code=data.get('ifsc_code', ''),
+            branch_name=data.get('branch_name', ''),
+            cheque_image=data.get('cheque_image'),
+            neft_rtgs_ref_no=data.get('neft_rtgs_ref_no', ''),
+        )
+
+        # Update investment due amount immediately (will be adjusted on approval/rejection)
+        # We track the "pending" state — due_amount stays until admin approves
+        logger.info(f"✅ Instalment payment {payment.payment_id} created for {investment.investment_id}")
+
+        return Response({
+            'success': True,
+            'message': 'Payment submitted successfully. Awaiting admin approval.',
+            'data': InvestmentPaymentSerializer(payment).data
+        }, status=status.HTTP_201_CREATED)
+
+
+class InvestmentPaymentsListView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/payments/
+    List all instalment payments for an investment.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, investment_id):
+        from .serializers import InvestmentPaymentSerializer
+        from .models import InvestmentPayment
+
+        try:
+            investment = Investment.objects.get(
+                id=investment_id,
+                customer=request.user,
+                is_deleted=False,
+            )
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        payments = investment.instalment_payments.select_related('payment_approved_by').order_by('payment_number', 'created_at')
+        serializer = InvestmentPaymentSerializer(payments, many=True)
+
+        return Response({
+            'success': True,
+            'data': serializer.data,
+            'count': payments.count(),
+        }, status=status.HTTP_200_OK)
+
+
+class DownloadPaymentReceiptView(APIView):
+    """
+    GET /api/wallet/investments/{investment_id}/payments/{payment_id}/receipt/download/
+    Download PDF receipt for a specific approved instalment payment.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, investment_id, payment_id):
+        from .models import InvestmentPayment
+
+        try:
+            investment = Investment.objects.select_related('property').get(
+                id=investment_id,
+                customer=request.user,
+                is_deleted=False,
+            )
+        except Investment.DoesNotExist:
+            return Response({'success': False, 'message': 'Investment not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            payment = InvestmentPayment.objects.get(
+                id=payment_id,
+                investment=investment,
+                payment_status='VERIFIED',
+            )
+        except InvestmentPayment.DoesNotExist:
+            return Response({'success': False, 'message': 'Receipt not found or payment not yet verified'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+            from io import BytesIO
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=A4,
+                leftMargin=1.2 * inch,
+                rightMargin=1.2 * inch,
+                topMargin=1 * inch,
+                bottomMargin=1 * inch,
+            )
+            elements = []
+            styles = getSampleStyleSheet()
+
+            title_style = ParagraphStyle(
+                'ReceiptTitle', parent=styles['Normal'],
+                fontSize=16, fontName='Helvetica-Bold',
+                alignment=TA_CENTER, spaceAfter=18, leading=20,
+            )
+            normal_style = ParagraphStyle(
+                'ReceiptNormal', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica', leading=16,
+            )
+            bold_style = ParagraphStyle(
+                'ReceiptBold', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica-Bold', leading=16,
+            )
+            right_style = ParagraphStyle(
+                'ReceiptRight', parent=styles['Normal'],
+                fontSize=10, fontName='Helvetica', alignment=TA_RIGHT, leading=16,
+            )
+            footer_style = ParagraphStyle(
+                'ReceiptFooter', parent=styles['Normal'],
+                fontSize=8, fontName='Helvetica',
+                alignment=TA_CENTER, textColor=colors.HexColor('#888888'),
+            )
+
+            # ── Title ──────────────────────────────────────────────────────
+            elements.append(Paragraph("PAYMENT RECEIPT", title_style))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=12))
+
+            # ── Receipt No + Date row ───────────────────────────────────────
+            receipt_no = payment.payment_id
+            approved_date = (payment.payment_approved_at or payment.created_at)
+            receipt_date = approved_date.strftime('%d-%m-%Y')
+
+            meta_data = [[
+                Paragraph(f'<b>Receipt No.:</b> {receipt_no}', bold_style),
+                Paragraph(f'<b>Date:</b> {receipt_date}', right_style),
+            ]]
+            meta_table = Table(meta_data, colWidths=[3.5 * inch, 3.5 * inch])
+            meta_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(meta_table)
+            elements.append(Spacer(1, 14))
+
+            # ── Received with thanks ────────────────────────────────────────
+            customer = investment.customer
+            customer_name = customer.get_full_name() or customer.username
+            amount_words = _amount_to_words(int(payment.amount))
+            amount_formatted = f"₹{payment.amount:,.2f}"
+
+            elements.append(Paragraph(
+                f"Received with thanks from <b>Mr./Ms. {customer_name}</b> the sum of <b>{amount_formatted}</b>",
+                normal_style
+            ))
+            elements.append(Paragraph(
+                f"(Rupees {amount_words} only)",
+                normal_style
+            ))
+            elements.append(Spacer(1, 10))
+
+            # ── Towards / Project ──────────────────────────────────────────
+            property_name = investment.property.name
+            elements.append(Paragraph(f"<b>Towards:</b> {property_name}", normal_style))
+            elements.append(Paragraph(f"<b>Project Name:</b> {property_name}", normal_style))
+            elements.append(Paragraph(f"<b>Instalment No.:</b> {payment.payment_number}", normal_style))
+            elements.append(Spacer(1, 14))
+
+            # ── Payment Details Table ──────────────────────────────────────
+            method_display = payment.get_payment_method_display() if payment.payment_method else 'N/A'
+            if payment.payment_method in ('ONLINE', 'POS'):
+                ref_value = payment.transaction_no or 'N/A'
+                dated_value = payment.payment_date.strftime('%d-%m-%Y') if payment.payment_date else 'N/A'
+                bank_value = payment.payment_mode or 'N/A'
+            elif payment.payment_method == 'DRAFT_CHEQUE':
+                ref_value = payment.cheque_number or 'N/A'
+                dated_value = payment.cheque_date.strftime('%d-%m-%Y') if payment.cheque_date else 'N/A'
+                bank_value = payment.bank_name or 'N/A'
+            elif payment.payment_method == 'NEFT_RTGS':
+                ref_value = payment.neft_rtgs_ref_no or 'N/A'
+                dated_value = payment.payment_date.strftime('%d-%m-%Y') if payment.payment_date else 'N/A'
+                bank_value = payment.bank_name or 'N/A'
+            else:
+                ref_value = 'N/A'
+                dated_value = 'N/A'
+                bank_value = 'N/A'
+
+            payment_table_data = [
+                ['Mode of Payment', method_display],
+                ['Transaction / Reference No.', ref_value],
+                ['Dated', dated_value],
+                ['Bank', bank_value],
+            ]
+            payment_table = Table(payment_table_data, colWidths=[2.8 * inch, 4.2 * inch])
+            payment_table.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f5f5f5')),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(payment_table)
+            elements.append(Spacer(1, 20))
+
+            # ── Acknowledgement ────────────────────────────────────────────
+            elements.append(Paragraph(
+                "This receipt is issued as an acknowledgement of payment received.",
+                normal_style
+            ))
+            elements.append(Spacer(1, 40))
+
+            # ── Footer ─────────────────────────────────────────────────────
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#aaaaaa'), spaceAfter=8))
+            elements.append(Paragraph("Powered by AssetKart", footer_style))
+
+            doc.build(elements)
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="receipt-{payment.payment_id}.pdf"'
+            return response
+
+        except Exception as e:
+            logger.error(f"❌ Error generating payment receipt: {str(e)}")
+            return Response({'success': False, 'message': f'Failed to generate receipt: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)

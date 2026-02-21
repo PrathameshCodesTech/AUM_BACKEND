@@ -9,10 +9,13 @@ from .views import (
     InvestmentDetailView,
     PortfolioAnalyticsView,
     check_cp_relation,
-       # 🆕 ADD THESE IMPORTS
     InvestmentReceiptsView,
     DownloadReceiptView,
     ReceiptDetailView,
+    # Instalment payment views
+    PayRemainingView,
+    InvestmentPaymentsListView,
+    DownloadPaymentReceiptView,
 )
 
 app_name = 'investments'
@@ -29,8 +32,13 @@ urlpatterns = [
     path('investments/portfolio/analytics/', PortfolioAnalyticsView.as_view(), name='portfolio-analytics'),
     path('investments/check-cp-relation/', check_cp_relation, name='check-cp-relation'),
 
-        # 🆕 RECEIPT APIs (USER SIDE)
+       # Receipt APIs (User Side)
     path('investments/receipts/', InvestmentReceiptsView.as_view(), name='investment-receipts'),
     path('investments/<int:investment_id>/receipt/', ReceiptDetailView.as_view(), name='receipt-detail'),
     path('investments/<int:investment_id>/receipt/download/', DownloadReceiptView.as_view(), name='receipt-download'),
+
+    # Instalment / Pay-Remaining APIs
+    path('investments/<int:investment_id>/pay-remaining/', PayRemainingView.as_view(), name='pay-remaining'),
+    path('investments/<int:investment_id>/payments/', InvestmentPaymentsListView.as_view(), name='investment-payments'),
+    path('investments/<int:investment_id>/payments/<int:payment_id>/receipt/download/', DownloadPaymentReceiptView.as_view(), name='payment-receipt-download'),
 ]

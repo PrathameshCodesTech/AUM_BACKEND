@@ -433,6 +433,79 @@ class Investment(TimestampedModel, SoftDeleteModel):
         return None
 
 
+class InvestmentPayment(TimestampedModel):
+    """
+    Individual payment installment for a partial-payment investment.
+    The first payment lives on the Investment itself; every subsequent
+    instalment is stored here so each can have its own receipt.
+    """
+
+    PAYMENT_METHOD_CHOICES = [
+        ('ONLINE',      'Online'),
+        ('POS',         'POS'),
+        ('DRAFT_CHEQUE','Draft / Cheque'),
+        ('NEFT_RTGS',   'NEFT / RTGS'),
+    ]
+    PAYMENT_STATUS_CHOICES = [
+        ('PENDING',   'Pending'),
+        ('VERIFIED',  'Verified'),
+        ('FAILED',    'Failed'),
+        ('REFUNDED',  'Refunded'),
+    ]
+
+    payment_id = models.CharField(max_length=100, unique=True)
+
+    investment = models.ForeignKey(
+        Investment, on_delete=models.CASCADE, related_name='instalment_payments'
+    )
+    # 2 = second payment, 3 = third, etc.
+    payment_number = models.PositiveIntegerField(default=2)
+
+    # Amount paid in this instalment
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+
+    # Snapshot of due_amount before & after this payment
+    due_amount_before = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    due_amount_after  = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    # ── Payment details (mirrors Investment payment fields) ──────────────
+    payment_method  = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, blank=True)
+    payment_status  = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='PENDING')
+    payment_date    = models.DateTimeField(null=True, blank=True)
+    payment_notes   = models.TextField(blank=True)
+    payment_mode    = models.CharField(max_length=50, blank=True)
+    transaction_no  = models.CharField(max_length=100, blank=True, null=True)
+
+    pos_slip_image  = models.ImageField(upload_to='investments/pos_slips/%Y/%m/', null=True, blank=True)
+    cheque_number   = models.CharField(max_length=50, blank=True, null=True)
+    cheque_date     = models.DateField(null=True, blank=True)
+    bank_name       = models.CharField(max_length=150, blank=True, null=True)
+    ifsc_code       = models.CharField(max_length=20, blank=True, null=True)
+    branch_name     = models.CharField(max_length=150, blank=True, null=True)
+    cheque_image    = models.ImageField(upload_to='investments/cheques/%Y/%m/', null=True, blank=True)
+    neft_rtgs_ref_no = models.CharField(max_length=100, blank=True, null=True)
+
+    # ── Approval ──────────────────────────────────────────────────────────
+    payment_approved_by   = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='approved_instalments'
+    )
+    payment_approved_at       = models.DateTimeField(null=True, blank=True)
+    payment_rejection_reason  = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'investment_payments'
+        ordering = ['payment_number', 'created_at']
+
+    def __str__(self):
+        return f"{self.payment_id} – ₹{self.amount} (#{self.payment_number})"
+
+    @staticmethod
+    def generate_payment_id():
+        from uuid import uuid4
+        return f"IPAY-{uuid4().hex[:10].upper()}"
+
+
 class InvestmentUnit(models.Model):
     """Track specific units allocated to investment"""
 
