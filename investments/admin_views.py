@@ -1021,37 +1021,45 @@ class AdminApprovePaymentView(APIView):
         from .models import InvestmentPayment
         from .serializers import InvestmentPaymentSerializer
         from django.db import transaction
+        from django.utils import timezone
+        from decimal import Decimal
 
-        try:
-            investment = Investment.objects.select_for_update().get(id=investment_id)
-        except Investment.DoesNotExist:
+        # Check investment exists first (no lock needed yet)
+        if not Investment.objects.filter(id=investment_id).exists():
             return Response({'success': False, 'message': 'Investment not found'},
                             status=status.HTTP_404_NOT_FOUND)
 
-        try:
-            payment = InvestmentPayment.objects.select_for_update().get(
-                id=payment_id, investment=investment
-            )
-        except InvestmentPayment.DoesNotExist:
+        if not InvestmentPayment.objects.filter(id=payment_id, investment_id=investment_id).exists():
             return Response({'success': False, 'message': 'Payment not found'},
                             status=status.HTTP_404_NOT_FOUND)
 
-        if payment.payment_status != 'PENDING':
-            return Response({'success': False, 'message': f'Payment is already {payment.payment_status}'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
         with transaction.atomic():
-            from django.utils import timezone
+            # select_for_update MUST be inside transaction.atomic()
+            try:
+                investment = Investment.objects.select_for_update().get(id=investment_id)
+            except Investment.DoesNotExist:
+                return Response({'success': False, 'message': 'Investment not found'},
+                                status=status.HTTP_404_NOT_FOUND)
+
+            try:
+                payment = InvestmentPayment.objects.select_for_update().get(
+                    id=payment_id, investment=investment
+                )
+            except InvestmentPayment.DoesNotExist:
+                return Response({'success': False, 'message': 'Payment not found'},
+                                status=status.HTTP_404_NOT_FOUND)
+
+            if payment.payment_status != 'PENDING':
+                return Response({'success': False, 'message': f'Payment is already {payment.payment_status}'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
             payment.payment_status = 'VERIFIED'
             payment.payment_approved_by = request.user
             payment.payment_approved_at = timezone.now()
-            payment.save(update_fields=['payment_status', 'payment_approved_by', 'payment_approved_at'])
+            payment.save(update_fields=['payment_status', 'payment_approved_by_id', 'payment_approved_at'])
 
-            # Reduce investment due_amount
-            from decimal import Decimal
             new_due = max(Decimal('0'), investment.due_amount - payment.amount)
             investment.due_amount = new_due
-            # Update amount paid on investment
             investment.amount = investment.amount + payment.amount
             if new_due == 0:
                 investment.is_partial_payment = False
