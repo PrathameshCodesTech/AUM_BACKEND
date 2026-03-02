@@ -64,6 +64,9 @@ class AdminInvestmentListSerializer(serializers.ModelSerializer):
             'due_amount',
             'total_investment_amount',
             'payment_due_date',
+            'is_deleted',
+            'deleted_at',
+            'deleted_by',
         ]
 
 

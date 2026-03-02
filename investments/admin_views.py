@@ -35,16 +35,18 @@ class AdminInvestmentStatsView(APIView):
     
     def get(self, request):
         try:
+            # Stats exclude soft-deleted (user-visible only)
+            base = Investment.objects.filter(is_deleted=False)
             stats = {
-                'total_investments': Investment.objects.count(),
-                'pending_investments': Investment.objects.filter(status='pending').count(),
-                'approved_investments': Investment.objects.filter(status='approved').count(),
-                'rejected_investments': Investment.objects.filter(status='rejected').count(),
-                'total_investment_amount': Investment.objects.aggregate(
+                'total_investments': base.count(),
+                'pending_investments': base.filter(status='pending').count(),
+                'approved_investments': base.filter(status='approved').count(),
+                'rejected_investments': base.filter(status='rejected').count(),
+                'total_investment_amount': base.aggregate(
                     total=Sum('amount'))['total'] or 0,
-                'total_pending_amount': Investment.objects.filter(
+                'total_pending_amount': base.filter(
                     status='pending').aggregate(total=Sum('amount'))['total'] or 0,
-                'total_approved_amount': Investment.objects.filter(
+                'total_approved_amount': base.filter(
                     status='approved').aggregate(total=Sum('amount'))['total'] or 0,
             }
             
@@ -84,9 +86,13 @@ class AdminInvestmentListView(generics.ListAPIView):
     serializer_class = AdminInvestmentListSerializer
     
     def get_queryset(self):
+        # By default exclude soft-deleted; include when include_deleted=true
+        include_deleted = self.request.query_params.get('include_deleted', '').lower() in ('true', '1', 'yes')
         queryset = Investment.objects.all().select_related(
             'customer', 'property', 'transaction'
         ).order_by('-created_at')
+        if not include_deleted:
+            queryset = queryset.filter(is_deleted=False)
         
         # Search
         search = self.request.query_params.get('search')
@@ -150,6 +156,69 @@ class AdminInvestmentDetailView(APIView):
                 'success': False,
                 'message': 'Investment not found'
             }, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminInvestmentSoftDeleteView(APIView):
+    """
+    POST /api/admin/investments/{investment_id}/soft-delete/
+    Soft delete: hidden from users, kept in DB.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, investment_id):
+        try:
+            investment = Investment.objects.get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Investment not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        if investment.is_deleted:
+            return Response({
+                'success': False,
+                'message': 'Investment is already soft-deleted'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        investment.is_deleted = True
+        investment.deleted_at = timezone.now()
+        investment.deleted_by = request.user
+        investment.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        logger.info(f"✅ Admin {request.user.username} soft-deleted investment {investment.investment_id}")
+        return Response({
+            'success': True,
+            'message': 'Investment soft-deleted. It is hidden from users but kept in the system.'
+        }, status=status.HTTP_200_OK)
+
+
+class AdminInvestmentRestoreView(APIView):
+    """
+    POST /api/admin/investments/{investment_id}/restore/
+    Restore a soft-deleted investment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, investment_id):
+        try:
+            investment = Investment.objects.get(id=investment_id)
+        except Investment.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Investment not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        if not investment.is_deleted:
+            return Response({
+                'success': False,
+                'message': 'Investment is not deleted'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        investment.is_deleted = False
+        investment.deleted_at = None
+        investment.deleted_by = None
+        investment.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        logger.info(f"✅ Admin {request.user.username} restored investment {investment.investment_id}")
+        return Response({
+            'success': True,
+            'message': 'Investment restored. It will be visible to the user again.'
+        }, status=status.HTTP_200_OK)
+
 
 class AdminInvestmentActionView(APIView):
     """

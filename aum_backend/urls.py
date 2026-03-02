@@ -34,6 +34,9 @@ urlpatterns = [
     path('api/admin/investments/', include('investments.admin_urls')),
     #path('api/', include('commissions.urls')),
  path('api/admin/commissions/', include('commissions.urls')),
+    # Document Storage
+    path('api/documents/', include('documents.urls')),
+    path('api/admin/documents/', include('documents.admin_urls')),
 ]
 
 if settings.DEBUG:

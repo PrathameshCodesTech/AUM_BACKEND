@@ -8,6 +8,8 @@ from .admin_views import (
     AdminInvestmentListView,
     AdminInvestmentDetailView,
     AdminInvestmentActionView,
+    AdminInvestmentSoftDeleteView,
+    AdminInvestmentRestoreView,
     AdminInvestmentsByPropertyView,
     AdminInvestmentsByCustomerView,
     CreateInvestmentView,
@@ -29,6 +31,8 @@ urlpatterns = [
     path('', AdminInvestmentListView.as_view(), name='admin-investment-list'),
     path('<int:investment_id>/', AdminInvestmentDetailView.as_view(), name='admin-investment-detail'),
     path('<int:investment_id>/action/', AdminInvestmentActionView.as_view(), name='admin-investment-action'),
+    path('<int:investment_id>/soft-delete/', AdminInvestmentSoftDeleteView.as_view(), name='admin-investment-soft-delete'),
+    path('<int:investment_id>/restore/', AdminInvestmentRestoreView.as_view(), name='admin-investment-restore'),
     path('create/', CreateInvestmentView.as_view(), name='create-investment'),
     
     # Filtered Views
