@@ -84,7 +84,8 @@ class AdminInvestmentListView(generics.ListAPIView):
     """
     permission_classes = [IsAuthenticated, IsAdmin]
     serializer_class = AdminInvestmentListSerializer
-    
+    pagination_class = None  # Return all investments; stats and table stay in sync
+
     def get_queryset(self):
         # By default exclude soft-deleted; include when include_deleted=true
         include_deleted = self.request.query_params.get('include_deleted', '').lower() in ('true', '1', 'yes')

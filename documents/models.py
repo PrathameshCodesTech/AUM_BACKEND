@@ -11,10 +11,12 @@ def document_upload_path(instance, filename):
 
 class Document(TimestampedModel):
     COMMON = 'COMMON'
-    PROJECT = 'PROJECT'
+    INDIVIDUAL = 'INDIVIDUAL'
+    PROPERTY = 'PROPERTY'
     TYPE_CHOICES = [
         (COMMON, 'Common'),
-        (PROJECT, 'Project'),
+        (INDIVIDUAL, 'Individual'),
+        (PROPERTY, 'Property'),
     ]
 
     title = models.CharField(max_length=255)
@@ -26,11 +28,19 @@ class Document(TimestampedModel):
         on_delete=models.PROTECT,
         related_name='uploaded_docs',
     )
-    # Empty = visible to all (COMMON); non-empty = visible only to selected users (PROJECT)
+    # INDIVIDUAL type: visible only to these selected users
     shared_with = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         blank=True,
-        related_name='project_docs',
+        related_name='individual_docs',
+    )
+    # PROPERTY type: visible to all investors of this property
+    property = models.ForeignKey(
+        'properties.Property',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='storage_documents',
     )
 
     class Meta:

@@ -17,13 +17,13 @@ User = get_user_model()
 
 
 class AdminDocumentListView(APIView):
-    """GET /api/admin/documents/?type=COMMON|PROJECT"""
+    """GET /api/admin/documents/?type=COMMON|INDIVIDUAL|PROPERTY"""
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
         doc_type = request.GET.get('type')
-        qs = Document.objects.select_related('uploaded_by').prefetch_related('shared_with')
-        if doc_type in (Document.COMMON, Document.PROJECT):
+        qs = Document.objects.select_related('uploaded_by', 'property').prefetch_related('shared_with')
+        if doc_type in (Document.COMMON, Document.INDIVIDUAL, Document.PROPERTY):
             qs = qs.filter(document_type=doc_type)
         serializer = DocumentSerializer(qs, many=True, context={'request': request})
         return Response({'success': True, 'data': serializer.data})
@@ -31,7 +31,10 @@ class AdminDocumentListView(APIView):
 
 class AdminDocumentUploadView(APIView):
     """POST /api/admin/documents/upload/
-    Accepts multipart: title, description, document_type, files (multiple), shared_with (JSON array of user IDs)
+    Multipart fields:
+      title, description, document_type, files (multiple)
+      shared_with  — JSON array of user IDs (INDIVIDUAL only)
+      property_id  — int (PROPERTY only)
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
@@ -41,20 +44,29 @@ class AdminDocumentUploadView(APIView):
         description = request.data.get('description', '').strip()
         document_type = request.data.get('document_type', Document.COMMON)
         shared_with_raw = request.data.get('shared_with', '[]')
+        property_id = request.data.get('property_id')
         files = request.FILES.getlist('files')
 
         if not title:
             return Response({'success': False, 'message': 'Title is required'}, status=400)
         if not files:
             return Response({'success': False, 'message': 'At least one file is required'}, status=400)
-        if document_type not in (Document.COMMON, Document.PROJECT):
+        if document_type not in (Document.COMMON, Document.INDIVIDUAL, Document.PROPERTY):
             return Response({'success': False, 'message': 'Invalid document type'}, status=400)
 
-        # Parse shared_with user IDs
         try:
             shared_with_ids = json.loads(shared_with_raw) if isinstance(shared_with_raw, str) else shared_with_raw
         except (json.JSONDecodeError, TypeError):
             shared_with_ids = []
+
+        # Resolve property for PROPERTY type
+        property_obj = None
+        if document_type == Document.PROPERTY and property_id:
+            from properties.models import Property
+            try:
+                property_obj = Property.objects.get(id=property_id)
+            except Property.DoesNotExist:
+                return Response({'success': False, 'message': 'Property not found'}, status=400)
 
         created_docs = []
         for f in files:
@@ -69,8 +81,9 @@ class AdminDocumentUploadView(APIView):
                 document_type=document_type,
                 file=f,
                 uploaded_by=request.user,
+                property=property_obj,
             )
-            if document_type == Document.PROJECT and shared_with_ids:
+            if document_type == Document.INDIVIDUAL and shared_with_ids:
                 users = User.objects.filter(id__in=shared_with_ids)
                 doc.shared_with.set(users)
             created_docs.append(doc)
@@ -89,7 +102,6 @@ class AdminDocumentDeleteView(APIView):
         except Document.DoesNotExist:
             return Response({'success': False, 'message': 'Document not found'}, status=404)
 
-        # Delete physical file
         if doc.file:
             try:
                 if os.path.isfile(doc.file.path):
@@ -102,7 +114,7 @@ class AdminDocumentDeleteView(APIView):
 
 
 class AdminUsersDropdownView(APIView):
-    """GET /api/admin/documents/users/ — returns id + full name for user multi-select"""
+    """GET /api/admin/documents/users/ — id + name list for INDIVIDUAL user multi-select"""
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
@@ -110,9 +122,16 @@ class AdminUsersDropdownView(APIView):
         data = []
         for u in users:
             full = u.get_full_name()
-            data.append({
-                'id': u.id,
-                'name': full if full else u.username,
-                'email': u.email,
-            })
+            data.append({'id': u.id, 'name': full if full else u.username, 'email': u.email})
+        return Response({'success': True, 'data': data})
+
+
+class AdminPropertiesDropdownView(APIView):
+    """GET /api/admin/documents/properties/ — id + name list for PROPERTY type dropdown"""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        from properties.models import Property
+        properties = Property.objects.order_by('name')
+        data = [{'id': p.id, 'name': p.name} for p in properties]
         return Response({'success': True, 'data': data})

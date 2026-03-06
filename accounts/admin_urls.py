@@ -9,6 +9,7 @@ from .admin_views import (
     AdminUserDetailView,
     AdminUserActionView,
     AdminUserCreateAPIView,
+    AdminDeleteUserView,
 )
 from accounts import admin_views
 
@@ -22,4 +23,5 @@ urlpatterns = [
     path('users/<int:user_id>/action/', AdminUserActionView.as_view(), name='admin-user-action'),
     path('users/<int:user_id>/update/', admin_views.update_user, name='update_user'),
     path('users/create/', AdminUserCreateAPIView.as_view(), name='admin-user-create'),
+    path('users/<int:user_id>/delete/', AdminDeleteUserView.as_view(), name='admin-user-delete'),
 ]

@@ -1,9 +1,9 @@
 import os
-from django.http import FileResponse, Http404
+from django.http import FileResponse
+from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
 
 from .models import Document
 from .serializers import DocumentSerializer
@@ -11,37 +11,49 @@ from .serializers import DocumentSerializer
 
 class UserDocumentListView(APIView):
     """GET /api/documents/
-    Returns:
+    Returns for the current user:
       - All COMMON documents
-      - PROJECT documents where the current user is in shared_with
+      - INDIVIDUAL documents where user is in shared_with
+      - PROPERTY documents where user has an approved investment in that property
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        from django.db.models import Q
+
+        # Get property IDs where user has approved investments
+        from investments.models import Investment
+        invested_property_ids = Investment.objects.filter(
+            customer=user, status__in=['approved', 'active', 'completed', 'redeemed']
+        ).values_list('property_id', flat=True).distinct()
+
         qs = Document.objects.filter(
             Q(document_type=Document.COMMON) |
-            Q(document_type=Document.PROJECT, shared_with=user)
-        ).select_related('uploaded_by').prefetch_related('shared_with').distinct()
+            Q(document_type=Document.INDIVIDUAL, shared_with=user) |
+            Q(document_type=Document.PROPERTY, property_id__in=invested_property_ids)
+        ).select_related('uploaded_by', 'property').prefetch_related('shared_with').distinct()
 
         serializer = DocumentSerializer(qs, many=True, context={'request': request})
         return Response({'success': True, 'data': serializer.data})
 
 
 class UserDocumentDownloadView(APIView):
-    """GET /api/documents/<doc_id>/download/
-    Streams the file for download after verifying the user has access.
-    """
+    """GET /api/documents/<doc_id>/download/"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, doc_id):
         user = request.user
-        from django.db.models import Q
+
+        from investments.models import Investment
+        invested_property_ids = Investment.objects.filter(
+            customer=user, status__in=['approved', 'active', 'completed', 'redeemed']
+        ).values_list('property_id', flat=True).distinct()
+
         try:
             doc = Document.objects.get(
                 Q(document_type=Document.COMMON) |
-                Q(document_type=Document.PROJECT, shared_with=user),
+                Q(document_type=Document.INDIVIDUAL, shared_with=user) |
+                Q(document_type=Document.PROPERTY, property_id__in=invested_property_ids),
                 id=doc_id,
             )
         except Document.DoesNotExist:
@@ -51,5 +63,4 @@ class UserDocumentDownloadView(APIView):
             return Response({'success': False, 'message': 'File not found on server'}, status=404)
 
         file_name = doc.file.name.rsplit('/', 1)[-1]
-        response = FileResponse(open(doc.file.path, 'rb'), as_attachment=True, filename=file_name)
-        return response
+        return FileResponse(open(doc.file.path, 'rb'), as_attachment=True, filename=file_name)

@@ -343,3 +343,29 @@ class AdminUserCreateAPIView(APIView):
             },
             status=status.HTTP_201_CREATED
         )
+
+
+
+class AdminDeleteUserView(APIView):
+    """DELETE /api/admin/users/<user_id>/delete/
+    Permanently deletes a user and all their associated data (investments cascade).
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def delete(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'success': False, 'message': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if user.is_staff or user.is_superuser:
+            return Response({'success': False, 'message': 'Cannot delete admin users'}, status=status.HTTP_403_FORBIDDEN)
+
+        username = user.username
+        try:
+            user.delete()
+            logger.info(f"Admin {request.user.username} deleted user {username} (id={user_id})")
+            return Response({'success': True, 'message': f'User {username} deleted successfully'})
+        except Exception as e:
+            logger.error(f"Error deleting user {user_id}: {str(e)}")
+            return Response({'success': False, 'message': f'Could not delete user: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
