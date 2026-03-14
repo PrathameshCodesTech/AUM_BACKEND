@@ -5,7 +5,9 @@ Routes for KYC verification APIs
 from django.urls import path
 from .views import (
     # Aadhaar
-     
+    AadhaarDigiLockerInitView,
+    AadhaarDigiLockerStatusView,
+    AadhaarDigiLockerFinalizeView,
     AadhaarPDFUploadView,
     # PAN
     PANVerifyView,
@@ -28,9 +30,18 @@ urlpatterns = [
     # ========================================
     # AADHAAR VERIFICATION
     # ========================================
-     path('aadhaar/upload-pdf/',
-     AadhaarPDFUploadView.as_view(),
-     name='aadhaar-upload-pdf'),
+    path('aadhaar/digilocker/init/',
+         AadhaarDigiLockerInitView.as_view(),
+         name='aadhaar-digilocker-init'),
+    path('aadhaar/digilocker/status/',
+         AadhaarDigiLockerStatusView.as_view(),
+         name='aadhaar-digilocker-status'),
+    path('aadhaar/digilocker/finalize/',
+         AadhaarDigiLockerFinalizeView.as_view(),
+         name='aadhaar-digilocker-finalize'),
+    path('aadhaar/upload-pdf/',
+         AadhaarPDFUploadView.as_view(),
+         name='aadhaar-upload-pdf'),
 
     # ========================================
     # PAN VERIFICATION

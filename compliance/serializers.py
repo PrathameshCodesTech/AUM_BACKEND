@@ -79,7 +79,8 @@ class AadhaarPDFUploadSerializer(serializers.Serializer):
         data = result.get('data', {})
         
         # Step 2: Get user's profile data (source of truth)
-        profile_name = user.username
+        # Prefer legal_full_name over username for compliance matching
+        profile_name = user.legal_full_name or user.username
         profile_dob = user.date_of_birth
         
         # Step 3: Extract Aadhaar data
@@ -211,83 +212,78 @@ class PANVerifySerializer(serializers.Serializer):
         return value
     
     def verify(self, user):
-        """Verify PAN and validate against Aadhaar"""
+        """Verify PAN using Surepass PAN Advanced V3 with name+DOB from Aadhaar."""
         from .services.kyc_service import SurepassKYC
-        from .utils import fuzzy_name_match
-        
+
         pan_number = self.validated_data['pan_number']
-        
-        # Step 1: Check if Aadhaar is verified
+
+        # Step 1: Check if Aadhaar is verified; get name + DOB for matching
         try:
             kyc = KYC.objects.get(user=user)
             if not kyc.aadhaar_verified:
                 raise serializers.ValidationError(
                     "Please verify your Aadhaar before verifying PAN"
                 )
-            aadhaar_name = kyc.aadhaar_name
         except KYC.DoesNotExist:
             raise serializers.ValidationError(
                 "Please complete Aadhaar verification first"
             )
-        
-        # Step 2: Verify PAN with Surepass
+
+        # Best source: Aadhaar-verified data; fallback to user compliance fields
+        signer_name = kyc.aadhaar_name or user.legal_full_name or user.get_full_name() or ''
+        aadhaar_dob = kyc.aadhaar_dob
+        signer_dob = ''
+        if aadhaar_dob:
+            signer_dob = aadhaar_dob.strftime('%Y-%m-%d')
+        elif user.date_of_birth:
+            signer_dob = user.date_of_birth.strftime('%Y-%m-%d')
+
+        # Step 2: Verify PAN with Surepass (name+DOB matching done server-side)
         kyc_service = SurepassKYC()
-        result = kyc_service.verify_pan(pan_number)
-        
+        result = kyc_service.verify_pan(pan_number, name=signer_name, dob=signer_dob)
+
         if not result.get('success'):
             raise serializers.ValidationError(result.get('error', 'PAN verification failed'))
-        
+
         data = result.get('data', {})
-        pan_name = data.get('full_name', '')
-        
-        # Step 3: Validate PAN name against Aadhaar name
-        name_validation = fuzzy_name_match(aadhaar_name, pan_name, threshold=0.75)
-        
-        if not name_validation['match']:
-            # NAME MISMATCH - REJECT
-            error_msg = (
-                f"PAN name mismatch: PAN name '{pan_name}' doesn't match "
-                f"your Aadhaar name '{aadhaar_name}'. Please ensure your PAN is linked to your Aadhaar."
-            )
-            logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
-            
-            # Mark for manual review instead of hard rejection
-            kyc.validation_errors['pan_name_mismatch'] = {
-                'aadhaar_name': aadhaar_name,
-                'pan_name': pan_name,
-                'score': name_validation['score'],
-                'reason': name_validation['reason']
-            }
-            kyc.name_validation_status = 'needs_review'
-            kyc.save()
-            
-            raise serializers.ValidationError(error_msg)
-        
-        # Step 4: Validation PASSED - Save data
+
+        # Step 3: Save verified data — pan-adv-v3 field names
         kyc.pan_number = pan_number.upper()
-        kyc.pan_name = pan_name
-        kyc.pan_aadhaar_linked = data.get('aadhaar_linked', False)
+        kyc.pan_name = data.get('name', '')
+        pan_dob_str = data.get('dob', '')
+        if pan_dob_str:
+            try:
+                from datetime import datetime as _dt
+                kyc.pan_dob = _dt.strptime(pan_dob_str, '%Y-%m-%d').date()
+            except Exception:
+                pass
+        kyc.name_validation_status = 'passed'
+        kyc.dob_validation_status = 'passed'
+        # aadhaar_seeding_status is a descriptive string from pan-adv-v3
+        # (e.g. "LINKED", "NOT_LINKED", "NA"). Store raw; treat anything
+        # that isn't an explicit not-linked/NA value as linked.
+        seeding = data.get('aadhaar_seeding_status', '')
+        kyc.pan_aadhaar_linked = bool(seeding) and seeding.upper() not in ('NOT_LINKED', 'NA', 'N', 'NO', '')
         kyc.pan_verified = True
         kyc.pan_verified_at = timezone.now()
         kyc.pan_api_response = data
         kyc.status = 'under_review'
         kyc.save()
-        
-        logger.info(f"✅ PAN verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
-        
-        # Warning if PAN-Aadhaar not linked
+
+        logger.info(
+            f"✅ PAN verified for user: {user.username} "
+            f"(name_status={data.get('name_status')}, dob_status={data.get('dob_status')})"
+        )
+
         warning = None
-        if not data.get('aadhaar_linked'):
-            warning = "Your PAN is not linked with Aadhaar. Please link them for better compliance."
-        
+        if not kyc.pan_aadhaar_linked:
+            warning = "Your PAN is not seeded with Aadhaar. Please link them for better compliance."
+
         return {
             'success': True,
             'data': data,
             'kyc_updated': True,
-            'validation': {
-                'name_match': name_validation
-            },
-            'warning': warning
+            'warning': warning,
         }
 
 

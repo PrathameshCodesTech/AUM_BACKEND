@@ -183,6 +183,8 @@ class AdminInvestmentSoftDeleteView(APIView):
         investment.deleted_at = timezone.now()
         investment.deleted_by = request.user
         investment.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        if investment.status == 'approved':
+            investment.property.update_funded_amount()
         logger.info(f"✅ Admin {request.user.username} soft-deleted investment {investment.investment_id}")
         return Response({
             'success': True,
@@ -214,6 +216,8 @@ class AdminInvestmentRestoreView(APIView):
         investment.deleted_at = None
         investment.deleted_by = None
         investment.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        if investment.status == 'approved':
+            investment.property.update_funded_amount()
         logger.info(f"✅ Admin {request.user.username} restored investment {investment.investment_id}")
         return Response({
             'success': True,
@@ -357,11 +361,14 @@ class AdminInvestmentActionView(APIView):
             investment.status = 'approved'
             investment.approved_at = timezone.now()
             investment.approved_by = request.user
-            
+
             # 🆕 NOW deduct available units (delayed from creation)
             investment.property.available_units -= investment.units_purchased
             investment.property.save()
-            
+
+            # Recalculate property funded_amount
+            investment.property.update_funded_amount()
+
             logger.info(f"✅ Deducted {investment.units_purchased} units from property {investment.property.name}")
             
             # ============================================
@@ -468,11 +475,12 @@ class AdminInvestmentActionView(APIView):
                     'message': f'Cannot cancel investment with status: {investment.status}'
                 }, status=status.HTTP_400_BAD_REQUEST)
             
-            # If already approved, return units to property
+            # If already approved, return units to property and recalc funded_amount
             if investment.status == 'approved':
                 investment.property.available_units += investment.units_purchased
                 investment.property.save()
-            
+                investment.property.update_funded_amount()
+
             investment.status = 'cancelled'
             investment.rejection_reason = reason
             

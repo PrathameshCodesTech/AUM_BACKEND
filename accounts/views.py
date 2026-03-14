@@ -99,7 +99,7 @@ def get_current_user(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])  # Allow unauthenticated so refresh can be blacklisted when access expired
 def logout(request):
     """Logout user (blacklist refresh token)"""
     try:
@@ -107,14 +107,9 @@ def logout(request):
         if refresh_token:
             token = RefreshToken(refresh_token)
             token.blacklist()
-
-        return Response({
-            'message': 'Logout successful'
-        }, status=status.HTTP_200_OK)
+        return Response({'message': 'Logout successful'}, status=status.HTTP_200_OK)
     except Exception as e:
-        return Response({
-            'error': str(e)
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CompleteProfileView(APIView):
@@ -211,39 +206,3 @@ class PortfolioView(APIView):
     
 
 
-@api_view(['GET'])
-@permission_classes([AllowAny])  # For testing, change to IsAuthenticated later
-def list_all_users(request):
-    """
-    GET /api/auth/users/
-    List all users (for testing/admin)
-    """
-    from accounts.models import User
-    from accounts.serializers import UserListSerializer
-    
-    users = User.objects.all().select_related('role').order_by('-date_joined')
-    
-    users_data = []
-    for user in users:
-        users_data.append({
-            'id': user.id,
-            'username': user.username,
-            'phone': user.phone,
-            'first_name':user.first_name,
-            'last_name':user.last_name,
-            'email': user.email,
-            'phone_verified': user.phone_verified,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'role': user.role.display_name if user.role else 'No Role',
-            'is_active': user.is_active,
-            'kyc_status': user.kyc_status,
-            'profile_completed': user.profile_completed,
-            'date_joined': user.date_joined.strftime('%Y-%m-%d %H:%M:%S'),
-        })
-    
-    return Response({
-        'success': True,
-        'count': len(users_data),
-        'users': users_data
-    }, status=status.HTTP_200_OK)

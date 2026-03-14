@@ -157,9 +157,92 @@ class SurepassKYC:
         }
     
     # ============================================
-    # AADHAAR VERIFICATION (PDF UPLOAD)
+    # AADHAAR VERIFICATION — DIGILOCKER (NEW)
     # ============================================
-    
+
+    def digilocker_initialize(self) -> dict:
+        """
+        Initialize a Surepass DigiLocker session.
+        Returns: { success, data: { token, client_id, gateway } }
+        """
+        logger.info("🔗 Initializing DigiLocker session")
+
+        if self.test_mode:
+            import uuid
+            return {
+                'success': True,
+                'data': {
+                    'client_id': f'test_cl_{uuid.uuid4().hex[:12]}',
+                    'token': 'test_digilocker_token',
+                    'gateway': f'{self.base_url}/digilocker/gateway',
+                },
+                'message': 'DigiLocker initialized (TEST MODE)',
+            }
+
+        try:
+            url = f"{self.base_url}/api/v1/digilocker/initialize"
+            response = requests.post(url, json={"data": {}}, headers=self._get_headers(), timeout=30)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('success'):
+                return {
+                    'success': True,
+                    'data': result.get('data', {}),
+                }
+            return {'success': False, 'error': result.get('message', 'DigiLocker init failed')}
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ DigiLocker init failed: {str(e)}")
+            return {'success': False, 'error': str(e)}
+
+    def digilocker_download_aadhaar(self, client_id: str) -> dict:
+        """
+        Fetch Aadhaar data from a completed DigiLocker session.
+        Returns: { success, data: { full_name, dob, gender, address, ... } }
+        """
+        logger.info(f"📥 Fetching DigiLocker Aadhaar for client_id={client_id}")
+
+        if self.test_mode:
+            return {
+                'success': True,
+                'data': {
+                    'full_name': 'Rajesh Kumar',
+                    'dob': '1990-01-15',
+                    'gender': 'M',
+                    'aadhaar_number': 'XXXX XXXX 7144',
+                    'address': {
+                        'house': '123',
+                        'street': 'MG Road',
+                        'vtc': 'Bangalore',
+                        'dist': 'Bangalore Urban',
+                        'state': 'Karnataka',
+                        'zip': '560034',
+                    },
+                },
+                'message': 'Aadhaar fetched (TEST MODE)',
+            }
+
+        try:
+            url = f"{self.base_url}/api/v1/digilocker/download-aadhaar/{client_id}"
+            response = requests.get(url, headers=self._get_headers(), timeout=30)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('success'):
+                return {'success': True, 'data': result.get('data', {})}
+            return {'success': False, 'error': result.get('message', 'Download failed')}
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ DigiLocker download failed: {str(e)}")
+            return {'success': False, 'error': str(e)}
+
+    # ============================================
+    # AADHAAR VERIFICATION (PDF UPLOAD) — DEPRECATED
+    # No longer called by any active endpoint.
+    # Use digilocker_initialize / digilocker_download_aadhaar instead.
+    # ============================================
+
     def verify_aadhaar_pdf(self, pdf_file, yob=None, full_name=None,  pincode=None) -> dict:
         """
         Verify Aadhaar using eAadhaar PDF file (with PDF unlocking)
@@ -344,80 +427,107 @@ class SurepassKYC:
     # PAN VERIFICATION
     # ============================================
     
-    def verify_pan(self, pan_number: str) -> dict:
+    def verify_pan(self, pan_number: str, name: str = '', dob: str = '') -> dict:
         """
-        Verify PAN card with Income Tax Department
-        
+        Verify PAN using Surepass PAN Advanced V3.
+
         Args:
             pan_number: 10-character PAN number
-        
+            name: Full legal name (preferably from Aadhaar) for name matching
+            dob: Date of birth in YYYY-MM-DD format for DOB matching
+
         Returns:
             dict with verification result
         """
         logger.info(f"🔍 Verifying PAN: {pan_number}")
-        
+
         if self.test_mode:
             return self._mock_pan_response(pan_number)
-        
+
         try:
-            # 👇 Always use sandbox for PAN
-            url = f"{self.sandbox_url}/api/v1/pan/pan"
-            
-            payload = {
-                'id_number': pan_number.upper()
-            }
-            
+            url = f"{self.base_url}/api/v1/pan/pan-adv-v3"
+
+            payload = {'id_number': pan_number.upper()}
+            if name:
+                payload['name'] = name
+            if dob:
+                payload['dob'] = dob
+
             response = requests.post(
                 url,
                 json=payload,
                 headers=self._get_headers(),
-                timeout=30
+                timeout=30,
             )
-            
             response.raise_for_status()
             result = response.json()
-            
-            if result.get('success'):
-                data = result.get('data', {})
-                logger.info(f"✅ PAN verified: {data.get('full_name', 'Unknown')}")
-                return {
-                    'success': True,
-                    'data': {
-                        'pan_number': pan_number.upper(),
-                        'full_name': data.get('full_name', ''),
-                        'category': data.get('category', ''),
-                        'aadhaar_linked': data.get('aadhaar_seeding_status', False),
-                        'status': 'Active'
-                    },
-                    'message': 'PAN verified successfully'
-                }
-            else:
-                error_msg = result.get('message', 'PAN verification failed')
+
+            data = result.get('data', {})
+
+            if not result.get('success'):
+                error_msg = result.get('message') or result.get('error') or 'PAN verification failed'
                 logger.error(f"❌ PAN verification failed: {error_msg}")
-                return {
-                    'success': False,
-                    'error': error_msg
-                }
-        
+                return {'success': False, 'error': error_msg}
+
+            name_status = data.get('name_status', '')
+            dob_status = data.get('dob_status', '')
+            pan_status = data.get('pan_status', '')
+
+            # Success only when both name and DOB confirmed matching by Surepass
+            if name_status != 'MATCHING' or dob_status != 'MATCHING':
+                mismatch_parts = []
+                if name_status != 'MATCHING':
+                    mismatch_parts.append(f'name ({name_status or "NOT_MATCHING"})')
+                if dob_status != 'MATCHING':
+                    mismatch_parts.append(f'date of birth ({dob_status or "NOT_MATCHING"})')
+                error_msg = (
+                    f"PAN details do not match: {', '.join(mismatch_parts)}. "
+                    f"Please ensure your PAN is linked to your Aadhaar."
+                )
+                logger.error(f"❌ PAN mismatch: name_status={name_status}, dob_status={dob_status}")
+                return {'success': False, 'error': error_msg, 'data': data}
+
+            logger.info(f"✅ PAN verified: {data.get('name', 'Unknown')}")
+            return {
+                'success': True,
+                'data': {
+                    'pan_number': pan_number.upper(),
+                    'name': data.get('name', ''),
+                    'dob': data.get('dob', ''),
+                    'pan_status': pan_status,
+                    'name_status': name_status,
+                    'dob_status': dob_status,
+                    'aadhaar_seeding_status': data.get('aadhaar_seeding_status', ''),
+                },
+                'message': 'PAN verified successfully',
+            }
+
+        except requests.exceptions.HTTPError as e:
+            try:
+                err_body = e.response.json()
+                error_msg = err_body.get('message') or err_body.get('error') or str(e)
+            except Exception:
+                error_msg = str(e)
+            logger.error(f"❌ PAN verification HTTP error: {error_msg}")
+            return {'success': False, 'error': error_msg}
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ PAN verification failed: {str(e)}")
-            return {
-                'success': False,
-                'error': f'PAN verification failed: {str(e)}'
-            }
-    
+            return {'success': False, 'error': f'PAN verification failed: {str(e)}'}
+
     def _mock_pan_response(self, pan_number: str) -> dict:
-        """Return mock PAN response for testing"""
+        """Return mock PAN response for testing (pan-adv-v3 shape)"""
         return {
             'success': True,
             'data': {
                 'pan_number': pan_number.upper(),
-                'full_name': 'RAJESH KUMAR',
-                'category': 'Individual',
-                'aadhaar_linked': True,
-                'status': 'Active'
+                'name': 'RAJESH KUMAR',
+                'dob': '1990-01-15',
+                'pan_status': 'VALID',
+                'name_status': 'MATCHING',
+                'dob_status': 'MATCHING',
+                'aadhaar_seeding_status': 'LINKED',
             },
-            'message': 'PAN verified successfully (TEST MODE)'
+            'message': 'PAN verified successfully (TEST MODE)',
         }
     
     # ============================================

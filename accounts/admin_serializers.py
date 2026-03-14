@@ -289,6 +289,7 @@ class AdminKYCActionSerializer(serializers.Serializer):
         return attrs
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    """Admin-only: update user with privileged fields."""
     class Meta:
         model = User
         fields = [
@@ -309,7 +310,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'is_blocked',
             'blocked_reason',
         ]
-        read_only_fields = ['is_verified', 'is_suspended', 'is_blocked']  # if you want admin-only for these
+        read_only_fields = ['is_verified', 'is_suspended', 'is_blocked']
 
 
 def generate_unique_username(first_name):

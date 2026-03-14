@@ -147,15 +147,12 @@ class SendOTPSerializer(serializers.Serializer):
                 existing_otp.sms_sent = True
                 existing_otp.sms_message_id = sms_result.get('message_id', '')
                 existing_otp.save(update_fields=['sms_sent', 'sms_message_id', 'updated_at'])
-                
                 time_remaining = (existing_otp.expires_at - timezone.now()).seconds // 60
-                
                 return {
                     'success': True,
                     'phone': phone,
                     'message': f'OTP resent successfully. Valid for {time_remaining} minutes.',
                     'message_id': sms_result.get('message_id'),
-                    'otp': otp_code if sms_result.get('status') == 'TEST_MODE' else None,
                     'expires_in_minutes': time_remaining
                 }
             else:
@@ -232,7 +229,6 @@ class SendOTPSerializer(serializers.Serializer):
                 'phone': phone,
                 'message': 'OTP sent successfully',
                 'message_id': sms_result.get('message_id'),
-                'otp': otp_code if sms_result.get('status') == 'TEST_MODE' else None,
                 'expires_in_minutes': 5
             }
         else:
@@ -575,11 +571,12 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'phone', 'phone_verified',
             'first_name', 'last_name', 'date_of_birth', 'avatar',
             'kyc_status', 'role', 'permissions',
-            'is_indian',  # 👈 ADD THIS
-            'profile_completed',  # 👈 ADD THIS
-            'is_cp',              # NEW
-            'cp_status',          # NEW
-            'is_active_cp',       # NEW
+            'is_indian',
+            'profile_completed',
+            'legal_full_name',
+            'is_cp',
+            'cp_status',
+            'is_active_cp',
         ]
         read_only_fields = ['phone', 'phone_verified', 'kyc_status', 'profile_completed']
 
@@ -611,20 +608,20 @@ class CompleteProfileSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
     is_indian = serializers.BooleanField(required=True)
-    
-    
+    legal_full_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
     def validate_username(self, value):
         # Check if username already exists
         if User.objects.filter(username=value).exclude(id=self.context['user'].id).exists():
             raise serializers.ValidationError("Username already taken")
         return value
-    
+
     def validate_email(self, value):
         # Check if email already exists
         if User.objects.filter(email=value).exclude(id=self.context['user'].id).exists():
             raise serializers.ValidationError("Email already registered")
         return value
-    
+
     def validate_date_of_birth(self, value):
         # Must be 18+ years old
         from datetime import date
@@ -633,12 +630,14 @@ class CompleteProfileSerializer(serializers.Serializer):
         if age < 18:
             raise serializers.ValidationError("Must be at least 18 years old")
         return value
-    
+
     def update(self, instance, validated_data):
         instance.username = validated_data['username']
         instance.email = validated_data['email']
         instance.date_of_birth = validated_data['date_of_birth']
         instance.is_indian = validated_data['is_indian']
+        if validated_data.get('legal_full_name'):
+            instance.legal_full_name = validated_data['legal_full_name']
         instance.profile_completed = True
         instance.save()
         return instance

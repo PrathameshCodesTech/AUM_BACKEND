@@ -4,8 +4,9 @@ from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework import status
 
-from .models import Document
+from .models import Document, DocumentESignRequest
 from .serializers import DocumentSerializer
 
 
@@ -64,3 +65,142 @@ class UserDocumentDownloadView(APIView):
 
         file_name = doc.file.name.rsplit('/', 1)[-1]
         return FileResponse(open(doc.file.path, 'rb'), as_attachment=True, filename=file_name)
+
+
+class UserESignListView(APIView):
+    """
+    GET /api/documents/esign/
+    Returns all eSign requests directed at the current user, with their status and sign URL.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        qs = DocumentESignRequest.objects.filter(
+            target_user=user
+        ).select_related('document', 'investment').order_by('-created_at')
+
+        data = []
+        for req in qs:
+            data.append({
+                'id': req.id,
+                'document_id': req.document_id,
+                'document_title': req.document.title,
+                'investment_id': req.investment_id,
+                'status': req.status,
+                'sign_url': req.surepass_sign_url if req.status == 'initiated' else None,
+                'completed_at': req.completed_at,
+                'created_at': req.created_at,
+            })
+
+        return Response({'success': True, 'data': data})
+
+
+class UserESignRefreshView(APIView):
+    """
+    POST /api/documents/esign/<request_id>/refresh/
+    User-triggered status check — polls Surepass and stores signed PDF if complete.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, request_id):
+        from django.core.files.base import ContentFile
+        from django.utils import timezone as tz
+        from .services.esign_service import SurepassESign
+
+        try:
+            esign_req = DocumentESignRequest.objects.select_related('document').get(
+                id=request_id, target_user=request.user
+            )
+        except DocumentESignRequest.DoesNotExist:
+            return Response({'success': False, 'message': 'Not found.'}, status=404)
+
+        if esign_req.status == 'signed':
+            return Response({'success': True, 'status': 'signed', 'message': 'Already signed.'})
+
+        service = SurepassESign()
+        status_result = service.get_status(esign_req.surepass_client_id)
+        esign_req.raw_status_payload = status_result
+        esign_req.save(update_fields=['raw_status_payload'])
+
+        if not status_result.get('success'):
+            return Response({'success': False, 'message': 'Could not fetch eSign status.'}, status=502)
+
+        status_data = status_result.get('data', {})
+        api_status = status_data.get('status', '')
+        signed = (
+            status_data.get('signed') or
+            status_data.get('completed') or
+            api_status in ('signed', 'esigned', 'esign_completed')
+        )
+
+        if not signed:
+            return Response({'success': True, 'status': esign_req.status, 'message': 'Not yet signed.'})
+
+        # Fetch and store signed document
+        doc_result = service.get_signed_document(esign_req.surepass_client_id)
+        esign_req.raw_signed_doc_payload = doc_result
+        esign_req.save(update_fields=['raw_signed_doc_payload'])
+
+        doc_data = doc_result.get('data', {}) if doc_result.get('success') else {}
+        signed_pdf_url = (
+            doc_data.get('signed_pdf_url') or
+            doc_data.get('file_url') or
+            doc_data.get('download_url') or
+            doc_data.get('url')
+        )
+        if signed_pdf_url:
+            pdf_bytes = service.download_signed_pdf_bytes(signed_pdf_url)
+            if pdf_bytes:
+                filename = f"signed_{esign_req.surepass_client_id}.pdf"
+                esign_req.signed_file.save(filename, ContentFile(pdf_bytes), save=False)
+
+                if not esign_req.signed_document_id:
+                    from .models import Document as Doc
+                    signed_doc = Doc.objects.create(
+                        title=f"Signed: {esign_req.document.title}",
+                        description='Signed agreement',
+                        document_type=Doc.INDIVIDUAL,
+                        file=esign_req.signed_file,
+                        uploaded_by=request.user,
+                    )
+                    signed_doc.shared_with.set([request.user])
+                    esign_req.signed_document = signed_doc
+
+        esign_req.status = 'signed'
+        esign_req.completed_at = tz.now()
+        esign_req.save(update_fields=['status', 'completed_at', 'signed_file', 'signed_document'])
+
+        return Response({'success': True, 'status': 'signed', 'message': 'eSign completed.'})
+
+
+class UserESignDownloadView(APIView):
+    """
+    GET /api/documents/esign/<request_id>/download/
+    Download the signed PDF (only accessible to the target user, only if signed).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, request_id):
+        try:
+            esign_req = DocumentESignRequest.objects.get(
+                id=request_id, target_user=request.user
+            )
+        except DocumentESignRequest.DoesNotExist:
+            return Response({'success': False, 'message': 'Not found.'}, status=404)
+
+        if esign_req.status != 'signed' or not esign_req.signed_file:
+            return Response(
+                {'success': False, 'message': 'Signed document not available yet.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not os.path.isfile(esign_req.signed_file.path):
+            return Response({'success': False, 'message': 'File not found on server.'}, status=404)
+
+        filename = esign_req.signed_file.name.rsplit('/', 1)[-1]
+        return FileResponse(
+            open(esign_req.signed_file.path, 'rb'),
+            as_attachment=True,
+            filename=filename,
+        )

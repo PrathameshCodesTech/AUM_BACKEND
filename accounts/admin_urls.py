@@ -11,6 +11,7 @@ from .admin_views import (
     AdminUserCreateAPIView,
     AdminDeleteUserView,
 )
+from .mail_view import SendEmailAPI
 from accounts import admin_views
 
 urlpatterns = [
@@ -24,4 +25,6 @@ urlpatterns = [
     path('users/<int:user_id>/update/', admin_views.update_user, name='update_user'),
     path('users/create/', AdminUserCreateAPIView.as_view(), name='admin-user-create'),
     path('users/<int:user_id>/delete/', AdminDeleteUserView.as_view(), name='admin-user-delete'),
+    # Email (admin only - moved from public /api/send/)
+    path('send-email/', SendEmailAPI.as_view(), name='admin-send-email'),
 ]

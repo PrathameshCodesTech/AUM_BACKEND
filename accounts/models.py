@@ -136,6 +136,13 @@ class User(AbstractUser, TimestampedModel):
     is_indian = models.BooleanField(default=True)
     profile_completed = models.BooleanField(default=False)
 
+    # Legal identity — used as compliance name source (Aadhaar/PAN matching)
+    legal_full_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Full name exactly as on government ID (used for KYC matching)"
+    )
+
     # Channel Partner fields
     is_cp = models.BooleanField(default=False, help_text="Is Channel Partner")
     cp_status = models.CharField(

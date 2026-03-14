@@ -4,12 +4,13 @@ from rest_framework import status
 
 from .serializers import SendEmailSerializer
 from .services.email_service import send_dynamic_email
+from .permissions import IsAdmin
 
 
 class SendEmailAPI(APIView):
+    permission_classes = [IsAdmin]
 
     def post(self, request):
-        print("Received data:", request.data)
 
         serializer = SendEmailSerializer(data=request.data)
 

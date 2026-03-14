@@ -42,6 +42,8 @@ class KYC(TimestampedModel, SoftDeleteModel):
     pan_name = models.CharField(max_length=200, blank=True, null=True)
     pan_father_name = models.CharField(max_length=200, blank=True, null=True)
     pan_dob = models.DateField(blank=True, null=True)
+    pan_gender = models.CharField(max_length=10, blank=True, null=True)
+    pan_masked_aadhaar = models.CharField(max_length=20, blank=True, null=True)
     pan_verified = models.BooleanField(default=False)
     pan_verified_at = models.DateTimeField(blank=True, null=True)
     pan_aadhaar_linked = models.BooleanField(default=False)
@@ -179,6 +181,38 @@ class Document(TimestampedModel, SoftDeleteModel):
     
     def __str__(self):
         return f"{self.get_document_type_display()} - {self.user.username}"
+
+
+class AadhaarSession(TimestampedModel):
+    """
+    Tracks each DigiLocker Aadhaar verification attempt.
+    One session per attempt; KYC stores only the final normalized result.
+    """
+    STATUS_CHOICES = [
+        ('initiated', 'Initiated'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('expired', 'Expired'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='aadhaar_sessions'
+    )
+    client_id = models.CharField(max_length=255, unique=True)
+    reference_id = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='initiated')
+    raw_init_payload = models.JSONField(blank=True, null=True)
+    raw_result_payload = models.JSONField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'aadhaar_sessions'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"AadhaarSession {self.client_id} [{self.status}]"
 
 
 class AuditLog(TimestampedModel):

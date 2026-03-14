@@ -36,7 +36,7 @@ SECRET_KEY = env('SECRET_KEY')
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env.bool('DEBUG', default=True)
+DEBUG = env.bool('DEBUG', default=False)
 
 #ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.29.63']
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
@@ -52,7 +52,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
-    'corsheaders',  # ← ADD THIS
+    'rest_framework_simplejwt.token_blacklist',
+    'corsheaders',
 
     # Your apps
     'accounts.apps.AccountsConfig',  # Important: Use AccountsConfig for signals
@@ -116,9 +117,9 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
 
 CORS_ALLOW_CREDENTIALS = True
 
-# In debug, allow all origins to avoid local CORS issues
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
+# Only allow all origins in explicit local dev (avoid in production)
+# Set CORS_ALLOW_ALL_ORIGINS=True in .env only for local development
+CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=False)
 
 ROOT_URLCONF = 'aum_backend.urls'
 
@@ -254,7 +255,7 @@ ROUTE_MOBILE_SMS_CONFIG = {
     "BASE_URL": "https://sms6.rmlconnect.net:8443/bulksms/bulksms",
 }
 
-ROUTE_MOBILE_TEST_MODE = env.bool('ROUTE_MOBILE_TEST_MODE', default=True)
+ROUTE_MOBILE_TEST_MODE = env.bool('ROUTE_MOBILE_TEST_MODE', default=False)
 
 
 # ========================================
@@ -299,22 +300,30 @@ LOGGING = {
 # SUREPASS KYC API CONFIGURATION
 # ========================================
 
-# Surepass API credentials
-# SUREPASS_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc2NDMyMzcyMiwianRpIjoiZWRiYTk5ODEtMzdlOC00NzM2LWE0MjAtZGI2MWM2NzIwNmE2IiwidHlwZSI6ImFjY2VzcyIsImlkZW50aXR5IjoiZGV2LnVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsIm5iZiI6MTc2NDMyMzcyMiwiZXhwIjoxNzY0OTI4NTIyLCJlbWFpbCI6InVzZXJuYW1lXzJxaW5lY3JwM3NhczNpZTNxb2ZtZG1uam9scEBzdXJlcGFzcy5pbyIsInRlbmFudF9pZCI6Im1haW4iLCJ1c2VyX2NsYWltcyI6eyJzY29wZXMiOlsidXNlciJdfX0.y6SUpgwjfSk3snqx_PrUqfi4JmmdjLV5c0b6H1qEZtE'
-# # Get from Surepass dashboard
-
-
-# # SUREPASS_BASE_URL = 'https://kyc-api.surepass.io'  # Production URL
-# SUREPASS_BASE_URL = 'https://sandbox.surepass.io'  # Production URL
-
-# # Test Mode - Set to True for mock responses (no API calls, no charges)
-# # Set to False when you have real credentials and want to use production APIs
-# SUREPASS_TEST_MODE = True  
-
-
 # Surepass Configuration
-SUREPASS_API_TOKEN = env('SUREPASS_API_TOKEN')
-SUREPASS_BASE_URL = env('SUREPASS_BASE_URL')
+SUREPASS_ENV = env('SUREPASS_ENV', default='').strip().lower()
+_surepass_legacy_token = env('SUREPASS_API_TOKEN', default='')
+_surepass_legacy_base_url = env(
+    'SUREPASS_BASE_URL',
+    default='https://sandbox.surepass.io',
+).rstrip('/')
+
+if SUREPASS_ENV in ('prod', 'production'):
+    SUREPASS_API_TOKEN = env('SUREPASS_PROD_API_TOKEN', default=_surepass_legacy_token)
+    SUREPASS_BASE_URL = env(
+        'SUREPASS_PROD_BASE_URL',
+        default=_surepass_legacy_base_url,
+    ).rstrip('/')
+elif SUREPASS_ENV == 'sandbox':
+    SUREPASS_API_TOKEN = env('SUREPASS_SANDBOX_API_TOKEN', default=_surepass_legacy_token)
+    SUREPASS_BASE_URL = env(
+        'SUREPASS_SANDBOX_BASE_URL',
+        default=_surepass_legacy_base_url,
+    ).rstrip('/')
+else:
+    SUREPASS_API_TOKEN = _surepass_legacy_token
+    SUREPASS_BASE_URL = _surepass_legacy_base_url
+
 SUREPASS_TEST_MODE = env.bool('SUREPASS_TEST_MODE', default=True)
 SUREPASS_BANK_TEST_MODE = env.bool('SUREPASS_BANK_TEST_MODE', default=False)
 
@@ -354,8 +363,8 @@ EMAIL_PORT = 465
 EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False     # must be False — SSL only
 
-EMAIL_HOST_USER = 'invest@assetkart.com'
-EMAIL_HOST_PASSWORD = 'Success@786'  # use env variable
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='invest@assetkart.com')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 ADMIN_NOTIFICATION_EMAIL = env('ADMIN_NOTIFICATION_EMAIL', default=EMAIL_HOST_USER)

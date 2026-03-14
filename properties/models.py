@@ -152,11 +152,12 @@ class Property(TimestampedModel, SoftDeleteModel):
         return self.funded_amount >= self.target_amount
 
     def update_funded_amount(self):
-        """Recalculate funded amount from approved investments"""
+        """Recalculate funded amount from approved, non-deleted investments"""
         from investments.models import Investment
         total = Investment.objects.filter(
             property=self,
-            status='approved'
+            status='approved',
+            is_deleted=False
         ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
 
         self.funded_amount = total

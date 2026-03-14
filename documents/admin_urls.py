@@ -5,6 +5,9 @@ from .admin_views import (
     AdminDocumentDeleteView,
     AdminUsersDropdownView,
     AdminPropertiesDropdownView,
+    AdminESignRequestView,
+    AdminESignListView,
+    AdminESignRefreshView,
 )
 
 urlpatterns = [
@@ -13,4 +16,8 @@ urlpatterns = [
     path('users/', AdminUsersDropdownView.as_view(), name='admin-document-users'),
     path('properties/', AdminPropertiesDropdownView.as_view(), name='admin-document-properties'),
     path('<int:doc_id>/', AdminDocumentDeleteView.as_view(), name='admin-document-delete'),
+    # eSign
+    path('esign/', AdminESignListView.as_view(), name='admin-esign-list'),
+    path('esign/request/', AdminESignRequestView.as_view(), name='admin-esign-request'),
+    path('esign/<int:request_id>/refresh/', AdminESignRefreshView.as_view(), name='admin-esign-refresh'),
 ]

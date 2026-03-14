@@ -51,7 +51,7 @@ class AdminDashboardStatsView(APIView):
                 'approved_kyc': KYC.objects.filter(status='verified').count(),
                 'rejected_kyc': KYC.objects.filter(status='rejected').count(),
                 'total_properties': Property.objects.count(),
-                'published_properties': Property.objects.filter(status='published').count(),
+                'published_properties': Property.objects.filter(status='live').count(),
                 'total_investments': Investment.objects.count(),
                 'total_investment_amount': Investment.objects.filter(
                     status='approved'  # 👈 Changed to match your Investment model status
@@ -232,55 +232,28 @@ class AdminUserActionView(APIView):
         }, status=status.HTTP_200_OK)
     
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from accounts.models import User
 from accounts.admin_serializers import UserUpdateSerializer
 
-@api_view(['PUT', 'PATCH'])
-@permission_classes([IsAuthenticated])  # Can restrict to admin if needed
-def update_user(request, user_id):
-    """
-    Update user details.
-    """
-    try:
-        user = User.objects.get(id=user_id)
-    except User.DoesNotExist:
-        return Response({"success": False, "error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-    
-    serializer = UserUpdateSerializer(user, data=request.data, partial=True)  # partial=True allows PATCH
-    if serializer.is_valid():
-        serializer.save()
-        return Response({"success": True, "data": serializer.data}, status=status.HTTP_200_OK)
-    else:
-        return Response({"success": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-    
-   
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-from accounts.models import User
-from accounts.admin_serializers import UserUpdateSerializer
 
 @api_view(['PUT', 'PATCH'])
-@permission_classes([IsAuthenticated])  # Can restrict to admin if needed
+@permission_classes([IsAuthenticated, IsAdmin])
 def update_user(request, user_id):
     """
-    Update user details.
+    Update user details. Admin only.
     """
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return Response({"success": False, "error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-    
-    serializer = UserUpdateSerializer(user, data=request.data, partial=True)  # partial=True allows PATCH
+
+    serializer = UserUpdateSerializer(user, data=request.data, partial=True)
     if serializer.is_valid():
         serializer.save()
         return Response({"success": True, "data": serializer.data}, status=status.HTTP_200_OK)
-    else:
-        return Response({"success": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"success": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
 
 

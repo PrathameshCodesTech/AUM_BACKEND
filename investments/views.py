@@ -147,6 +147,30 @@ class CreateInvestmentView(APIView):
                 logger.info(f"✅ User using correct CP code: {referral_code}")
         
         # ============================================
+        # KYC GATE: Aadhaar + PAN must be verified
+        # ============================================
+        from compliance.models import KYC
+        try:
+            kyc = KYC.objects.get(user=request.user)
+            if not kyc.aadhaar_verified or not kyc.pan_verified:
+                missing = []
+                if not kyc.aadhaar_verified:
+                    missing.append('Aadhaar')
+                if not kyc.pan_verified:
+                    missing.append('PAN')
+                return Response({
+                    'success': False,
+                    'error': 'kyc_incomplete',
+                    'message': f'Please complete KYC verification before investing. Missing: {", ".join(missing)}.'
+                }, status=status.HTTP_403_FORBIDDEN)
+        except KYC.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'kyc_incomplete',
+                'message': 'Please complete KYC verification (Aadhaar + PAN) before investing.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # ============================================
         # VALIDATE INPUT DATA
         # ============================================
         serializer = CreateInvestmentSerializer(data=request.data)
