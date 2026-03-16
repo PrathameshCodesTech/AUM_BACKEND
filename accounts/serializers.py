@@ -569,11 +569,11 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'email', 'phone', 'phone_verified',
-            'first_name', 'last_name', 'date_of_birth', 'avatar',
+            'first_name', 'last_name', 'legal_full_name',
+            'date_of_birth', 'avatar',
             'kyc_status', 'role', 'permissions',
             'is_indian',
             'profile_completed',
-            'legal_full_name',
             'is_cp',
             'cp_status',
             'is_active_cp',
@@ -605,25 +605,26 @@ class UserListSerializer(serializers.ModelSerializer):
 
 class CompleteProfileSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150, required=True)
+    # Display name only — not used for compliance
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
     is_indian = serializers.BooleanField(required=True)
+    # Kept for backward compatibility; ignored when first_name+last_name are supplied
     legal_full_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
     def validate_username(self, value):
-        # Check if username already exists
         if User.objects.filter(username=value).exclude(id=self.context['user'].id).exists():
             raise serializers.ValidationError("Username already taken")
         return value
 
     def validate_email(self, value):
-        # Check if email already exists
         if User.objects.filter(email=value).exclude(id=self.context['user'].id).exists():
             raise serializers.ValidationError("Email already registered")
         return value
 
     def validate_date_of_birth(self, value):
-        # Must be 18+ years old
         from datetime import date
         today = date.today()
         age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
@@ -632,12 +633,56 @@ class CompleteProfileSerializer(serializers.Serializer):
         return value
 
     def update(self, instance, validated_data):
+        # ── Derive canonical legal_full_name from split fields ──────────────
+        new_first = validated_data.get('first_name', '').strip()
+        new_last  = validated_data.get('last_name', '').strip()
+        derived_legal = f"{new_first} {new_last}".strip() if (new_first or new_last) else ''
+        # Fall back to explicit legal_full_name if split fields not provided
+        if not derived_legal:
+            derived_legal = (validated_data.get('legal_full_name') or '').strip()
+
+        # ── Identity field lock after Aadhaar verification ──────────────────
+        # Locked fields: first_name, last_name, legal_full_name, date_of_birth
+        try:
+            from compliance.models import KYC
+            kyc = KYC.objects.get(user=instance)
+            if kyc.aadhaar_verified:
+                locked = []
+                new_dob = validated_data.get('date_of_birth')
+                if derived_legal and derived_legal != (instance.legal_full_name or ''):
+                    locked.extend(['first_name', 'last_name', 'legal_full_name'])
+                if new_dob and new_dob != instance.date_of_birth:
+                    locked.append('date_of_birth')
+                if locked:
+                    logger.warning(
+                        "IDENTITY_LOCK: user %s attempted to change %s after Aadhaar verification",
+                        instance.id, locked,
+                    )
+                    raise serializers.ValidationError({
+                        f: "Cannot change this field after Aadhaar has been verified. "
+                           "Contact support if an update is genuinely needed."
+                        for f in ['first_name', 'last_name', 'legal_full_name', 'date_of_birth']
+                        if f in locked
+                    })
+        except Exception as exc:
+            if isinstance(exc, serializers.ValidationError):
+                raise
+            pass  # KYC.DoesNotExist or import error — allow update
+
+        # ── Persist ────────────────────────────────────────────────────────
+        # username = display/preferred name only
         instance.username = validated_data['username']
-        instance.email = validated_data['email']
+        instance.email    = validated_data['email']
         instance.date_of_birth = validated_data['date_of_birth']
         instance.is_indian = validated_data['is_indian']
-        if validated_data.get('legal_full_name'):
-            instance.legal_full_name = validated_data['legal_full_name']
+        # Legal identity split fields
+        if new_first:
+            instance.first_name = new_first
+        if new_last:
+            instance.last_name = new_last
+        # Canonical compliance field: always derive from split fields when available
+        if derived_legal:
+            instance.legal_full_name = derived_legal
         instance.profile_completed = True
         instance.save()
         return instance

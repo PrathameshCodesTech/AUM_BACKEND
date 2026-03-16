@@ -218,6 +218,7 @@ class AdminESignRequestView(APIView):
                 skipped_count += 1
                 continue
 
+            # Display name for UI — use legal identity, never username
             entry['user_name'] = target_user.legal_full_name or target_user.get_full_name() or target_user.username
 
             if not doc.shared_with.filter(id=target_user.id).exists():
@@ -246,7 +247,19 @@ class AdminESignRequestView(APIView):
                 skipped_count += 1
                 continue
 
-            signer_name = target_user.legal_full_name or target_user.get_full_name() or target_user.username
+            # eSign legal name: Aadhaar-verified name is most accurate; fallback to
+            # legal_full_name. Never use username — it is a display name only.
+            try:
+                from compliance.models import KYC as _KYC
+                _kyc = _KYC.objects.get(user=target_user)
+                signer_name = _kyc.aadhaar_name or target_user.legal_full_name or ''
+            except Exception:
+                signer_name = target_user.legal_full_name or ''
+            if not signer_name:
+                entry.update({'status': 'error', 'message': 'User has no verified legal name. Ask them to complete their profile (first/last name as per Aadhaar).'})
+                results.append(entry)
+                skipped_count += 1
+                continue
             signer_phone = getattr(target_user, 'phone', '') or ''
             signer_email = target_user.email or ''
 
@@ -341,7 +354,8 @@ class AdminESignListView(APIView):
                 'document_id': req.document_id,
                 'document_title': req.document.title,
                 'target_user_id': req.target_user_id,
-                'target_user_name': tu.legal_full_name or tu.get_full_name() or tu.username,
+                'target_user_name': tu.legal_full_name or tu.get_full_name() or tu.username,  # username last-resort for display only
+
                 'investment_id': req.investment_id,
                 'status': req.status,
                 'sign_url': req.surepass_sign_url,
@@ -353,6 +367,9 @@ class AdminESignListView(APIView):
                     if req.signed_file and req.signed_file.name
                     else None
                 ),
+                'identity_check_status': req.identity_check_status,
+                'signer_name_returned': req.signer_name_returned or None,
+                'identity_mismatch_reason': req.identity_mismatch_reason or None,
             })
 
         return Response({'success': True, 'data': data})
@@ -376,7 +393,7 @@ class AdminESignRefreshView(APIView):
             return Response({'success': False, 'message': 'eSign request not found.'}, status=404)
 
         if esign_req.status == 'signed':
-            return Response({'success': True, 'status': 'signed', 'message': 'Already signed.'})
+            return Response({'success': True, 'status': 'signed', 'message': 'Already signed.', 'identity_check_status': esign_req.identity_check_status})
 
         service = SurepassESign()
 
@@ -399,7 +416,7 @@ class AdminESignRefreshView(APIView):
         if not signed:
             return Response({'success': True, 'status': esign_req.status, 'message': 'Not yet signed.'})
 
-        # Fetch signed document
+        # ── Step 1: Fetch signed-document metadata ──────────────────────────
         doc_result = service.get_signed_document(esign_req.surepass_client_id)
         esign_req.raw_signed_doc_payload = doc_result
         esign_req.save(update_fields=['raw_signed_doc_payload'])
@@ -412,32 +429,126 @@ class AdminESignRefreshView(APIView):
             doc_data.get('download_url') or
             doc_data.get('url')
         )
+
+        # ── Step 2: Download raw PDF bytes and save to signed_file ──────────
+        # Always persist the bytes for admin access.  The user-visible Document
+        # record is NOT created here — only after identity check passes.
         if signed_pdf_url:
             pdf_bytes = service.download_signed_pdf_bytes(signed_pdf_url)
             if pdf_bytes:
                 filename = f"signed_{esign_req.surepass_client_id}.pdf"
                 esign_req.signed_file.save(filename, ContentFile(pdf_bytes), save=False)
 
-                # Create a Document record for the signed file so it surfaces in
-                # the user's /api/documents/ list as an INDIVIDUAL document
-                if not esign_req.signed_document_id:
-                    signed_doc = Document.objects.create(
-                        title=f"Signed: {esign_req.document.title}",
-                        description=f"Signed agreement for {esign_req.target_user.get_full_name() or esign_req.target_user.username}",
-                        document_type=Document.INDIVIDUAL,
-                        file=esign_req.signed_file,
-                        uploaded_by=request.user,
-                    )
-                    signed_doc.shared_with.set([esign_req.target_user])
-                    esign_req.signed_document = signed_doc
+        # ── Step 3: Identity check BEFORE sharing any document ──────────────
+        from .services.esign_service import validate_signer_identity
+        from compliance.models import KYC as KYCModel
+        try:
+            kyc = KYCModel.objects.get(user=esign_req.target_user)
+            expected_names = [n for n in [kyc.aadhaar_name, esign_req.target_user.legal_full_name] if n]
+        except KYCModel.DoesNotExist:
+            expected_names = [n for n in [esign_req.target_user.legal_full_name] if n]
 
+        identity = validate_signer_identity(status_data, doc_data, expected_names)
+        esign_req.signer_name_returned     = identity['signer_name_returned'] or ''
+        esign_req.identity_check_status    = identity['check_status']
+        esign_req.identity_mismatch_reason = identity['reason']
+
+        check = identity['check_status']
+
+        if check == 'mismatch':
+            # Hard mismatch — signed file stored for admin review only, NOT shared with user
+            logger.warning(
+                "eSign identity MISMATCH on request %s: provider='%s', expected=%s",
+                esign_req.id, identity['signer_name_returned'], expected_names,
+            )
+            esign_req.status = 'identity_mismatch'
+            esign_req.completed_at = timezone.now()
+            esign_req.save(update_fields=[
+                'status', 'completed_at', 'signed_file',
+                'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+            ])
+            return Response({
+                'success': True,
+                'status': 'identity_mismatch',
+                'message': 'eSign completed but signer identity does not match KYC. Marked identity_mismatch — admin review required.',
+                'esign_request_id': esign_req.id,
+                'identity_check_status': check,
+                'identity_mismatch_reason': identity['reason'],
+            })
+
+        if check == 'unverified':
+            # Provider returned no identity info — hold for admin review, do not share with user
+            logger.warning(
+                "eSign identity UNVERIFIED on request %s — provider returned no signer name.",
+                esign_req.id,
+            )
+            esign_req.status = 'needs_review'
+            esign_req.completed_at = timezone.now()
+            esign_req.save(update_fields=[
+                'status', 'completed_at', 'signed_file',
+                'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+            ])
+            return Response({
+                'success': True,
+                'status': 'needs_review',
+                'message': 'eSign received but signer identity could not be confirmed by provider. Needs admin review.',
+                'esign_request_id': esign_req.id,
+                'identity_check_status': check,
+            })
+
+        # ── Step 4: Identity verified — mark as signed ────────────────────────
         esign_req.status = 'signed'
         esign_req.completed_at = timezone.now()
-        esign_req.save(update_fields=['status', 'completed_at', 'signed_file', 'signed_document'])
+        esign_req.save(update_fields=[
+            'status', 'completed_at', 'signed_file',
+            'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+        ])
 
         return Response({
             'success': True,
             'status': 'signed',
             'message': 'eSign completed and signed document stored.',
+            'esign_request_id': esign_req.id,
+            'identity_check_status': check,
+        })
+
+
+class AdminESignApproveView(APIView):
+    """
+    POST /api/admin/documents/esign/<id>/approve/
+    Admin manually approves a needs_review or identity_mismatch eSign request,
+    marks it as signed and shares the signed document with the user.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def post(self, request, request_id):
+        from django.utils import timezone
+        try:
+            esign_req = DocumentESignRequest.objects.select_related(
+                'document', 'target_user'
+            ).get(id=request_id)
+        except DocumentESignRequest.DoesNotExist:
+            return Response({'success': False, 'message': 'eSign request not found.'}, status=404)
+
+        if esign_req.status not in ('needs_review', 'identity_mismatch'):
+            return Response(
+                {'success': False, 'message': f'Cannot approve a request with status "{esign_req.status}".'},
+                status=400,
+            )
+
+        esign_req.status = 'signed'
+        esign_req.identity_check_status = 'verified'
+        esign_req.identity_mismatch_reason = 'Manually verified and approved by admin.'
+        if not esign_req.completed_at:
+            esign_req.completed_at = timezone.now()
+        esign_req.save(update_fields=[
+            'status', 'completed_at',
+            'identity_check_status', 'identity_mismatch_reason',
+        ])
+
+        return Response({
+            'success': True,
+            'status': 'signed',
+            'message': 'eSign request approved and marked as signed.',
             'esign_request_id': esign_req.id,
         })

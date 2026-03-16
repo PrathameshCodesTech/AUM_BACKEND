@@ -116,7 +116,7 @@ class UserESignRefreshView(APIView):
             return Response({'success': False, 'message': 'Not found.'}, status=404)
 
         if esign_req.status == 'signed':
-            return Response({'success': True, 'status': 'signed', 'message': 'Already signed.'})
+            return Response({'success': True, 'status': 'signed', 'message': 'Already signed.', 'identity_check_status': esign_req.identity_check_status})
 
         service = SurepassESign()
         status_result = service.get_status(esign_req.surepass_client_id)
@@ -137,7 +137,7 @@ class UserESignRefreshView(APIView):
         if not signed:
             return Response({'success': True, 'status': esign_req.status, 'message': 'Not yet signed.'})
 
-        # Fetch and store signed document
+        # ── Step 1: Fetch signed-document metadata ──────────────────────────
         doc_result = service.get_signed_document(esign_req.surepass_client_id)
         esign_req.raw_signed_doc_payload = doc_result
         esign_req.save(update_fields=['raw_signed_doc_payload'])
@@ -149,29 +149,93 @@ class UserESignRefreshView(APIView):
             doc_data.get('download_url') or
             doc_data.get('url')
         )
+
+        # ── Step 2: Download raw PDF bytes and save to signed_file ──────────
+        # We always persist the raw bytes for admin access, but we do NOT
+        # create or share the user-visible Document record yet.
         if signed_pdf_url:
             pdf_bytes = service.download_signed_pdf_bytes(signed_pdf_url)
             if pdf_bytes:
                 filename = f"signed_{esign_req.surepass_client_id}.pdf"
                 esign_req.signed_file.save(filename, ContentFile(pdf_bytes), save=False)
 
-                if not esign_req.signed_document_id:
-                    from .models import Document as Doc
-                    signed_doc = Doc.objects.create(
-                        title=f"Signed: {esign_req.document.title}",
-                        description='Signed agreement',
-                        document_type=Doc.INDIVIDUAL,
-                        file=esign_req.signed_file,
-                        uploaded_by=request.user,
-                    )
-                    signed_doc.shared_with.set([request.user])
-                    esign_req.signed_document = signed_doc
+        # ── Step 3: Identity check BEFORE sharing any document ──────────────
+        from .services.esign_service import validate_signer_identity
+        from compliance.models import KYC as KYCModel
+        try:
+            kyc = KYCModel.objects.get(user=esign_req.target_user)
+            expected_names = [n for n in [kyc.aadhaar_name, esign_req.target_user.legal_full_name] if n]
+        except KYCModel.DoesNotExist:
+            expected_names = [n for n in [esign_req.target_user.legal_full_name] if n]
+
+        identity = validate_signer_identity(status_data, doc_data, expected_names)
+        esign_req.signer_name_returned     = identity['signer_name_returned'] or ''
+        esign_req.identity_check_status    = identity['check_status']
+        esign_req.identity_mismatch_reason = identity['reason']
+
+        check = identity['check_status']
+
+        if check == 'mismatch':
+            # Hard identity mismatch — signed file stored for admin only, NOT shared with user
+            esign_req.status = 'identity_mismatch'
+            esign_req.completed_at = tz.now()
+            esign_req.save(update_fields=[
+                'status', 'completed_at', 'signed_file',
+                'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+            ])
+            return Response({
+                'success': True,
+                'status': 'identity_mismatch',
+                'message': (
+                    'Your eSign submission has been received but the signer identity '
+                    'could not be confirmed. An admin will review this.'
+                ),
+                'identity_check_status': check,
+            })
+
+        if check == 'unverified':
+            # Provider returned no signer identity — hold for admin review, do not share
+            esign_req.status = 'needs_review'
+            esign_req.completed_at = tz.now()
+            esign_req.save(update_fields=[
+                'status', 'completed_at', 'signed_file',
+                'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+            ])
+            return Response({
+                'success': True,
+                'status': 'needs_review',
+                'message': (
+                    'eSign received but identity verification is pending admin review.'
+                ),
+                'identity_check_status': check,
+            })
+
+        # ── Step 4: Identity verified — create and share the Document ────────
+        if esign_req.signed_file and not esign_req.signed_document_id:
+            from .models import Document as Doc
+            signed_doc = Doc.objects.create(
+                title=f"Signed: {esign_req.document.title}",
+                description='Signed agreement',
+                document_type=Doc.INDIVIDUAL,
+                file=esign_req.signed_file,
+                uploaded_by=request.user,
+            )
+            signed_doc.shared_with.set([request.user])
+            esign_req.signed_document = signed_doc
 
         esign_req.status = 'signed'
         esign_req.completed_at = tz.now()
-        esign_req.save(update_fields=['status', 'completed_at', 'signed_file', 'signed_document'])
+        esign_req.save(update_fields=[
+            'status', 'completed_at', 'signed_file', 'signed_document',
+            'signer_name_returned', 'identity_check_status', 'identity_mismatch_reason',
+        ])
 
-        return Response({'success': True, 'status': 'signed', 'message': 'eSign completed.'})
+        return Response({
+            'success': True,
+            'status': 'signed',
+            'message': 'eSign completed.',
+            'identity_check_status': check,
+        })
 
 
 class UserESignDownloadView(APIView):

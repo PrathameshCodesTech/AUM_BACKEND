@@ -78,9 +78,16 @@ class AadhaarPDFUploadSerializer(serializers.Serializer):
         
         data = result.get('data', {})
         
-        # Step 2: Get user's profile data (source of truth)
-        # Prefer legal_full_name over username for compliance matching
-        profile_name = user.legal_full_name or user.username
+        # Step 2: Get user's legal identity (source of truth for compliance)
+        # Must use legal_full_name only — username is display name and must never
+        # be used for Aadhaar identity matching.
+        profile_name = user.legal_full_name or ''
+        if not profile_name:
+            raise serializers.ValidationError(
+                "Your legal name is not set. Please go to your profile, enter your "
+                "first and last name exactly as they appear on your Aadhaar/PAN, "
+                "then return here to verify."
+            )
         profile_dob = user.date_of_birth
         
         # Step 3: Extract Aadhaar data

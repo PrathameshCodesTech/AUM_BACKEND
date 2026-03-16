@@ -242,6 +242,7 @@ class KYCAdmin(admin.ModelAdmin):
 
     search_fields = [
         "user__username",
+        "user__legal_full_name",
         "user__email",
         "user__phone",
         "aadhaar_number",
@@ -256,6 +257,8 @@ class KYCAdmin(admin.ModelAdmin):
     date_hierarchy = "created_at"
 
     readonly_fields = [
+        # Identity comparison
+        "declared_identity_summary",
         # Timestamps & meta
         "created_at",
         "updated_at",
@@ -287,6 +290,7 @@ class KYCAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "user",
+                    "declared_identity_summary",
                     "status",
                     "verified_at",
                     "verified_by",
@@ -304,7 +308,6 @@ class KYCAdmin(admin.ModelAdmin):
                     "validation_errors",
                     "validation_errors_display",
                 ),
-                "classes": ("collapse",),
             },
         ),
         (
@@ -331,7 +334,7 @@ class KYCAdmin(admin.ModelAdmin):
         (
             "Aadhaar API Response",
             {
-                "fields": ("aadhaar_api_response", "aadhaar_api_response_display"),
+                "fields": ("aadhaar_api_response_display",),
                 "classes": ("collapse",),
             },
         ),
@@ -420,6 +423,76 @@ class KYCAdmin(admin.ModelAdmin):
     formfield_overrides = {
         models.JSONField: {"widget": PrettyJSONWidget},
     }
+
+    # ---------- Identity comparison helper ----------
+
+    def declared_identity_summary(self, obj):
+        """
+        Side-by-side comparison of the user's declared legal identity (from profile)
+        vs the identity returned by the Aadhaar provider (Surepass/DigiLocker).
+        Shown at the top of the KYC detail form for immediate visibility.
+        """
+        u = obj.user
+
+        # Profile identity
+        declared_name = u.legal_full_name or f"{u.first_name or ''} {u.last_name or ''}".strip() or "—"
+        declared_dob = str(u.date_of_birth) if u.date_of_birth else "—"
+
+        # Provider-returned identity
+        aadhaar_name = obj.aadhaar_name or "—"
+        aadhaar_dob = str(obj.aadhaar_dob) if obj.aadhaar_dob else "—"
+
+        # Validation badges
+        name_colors = {
+            "passed": "#28a745", "failed": "#dc3545",
+            "needs_review": "#ffc107", "pending": "#6c757d",
+        }
+        dob_colors = {
+            "passed": "#28a745", "failed": "#dc3545",
+            "needs_review": "#ffc107", "pending": "#6c757d",
+        }
+        name_status = obj.name_validation_status or "pending"
+        dob_status = obj.dob_validation_status or "pending"
+        score_html = ""
+        if obj.name_match_score is not None:
+            score_html = f"&nbsp;<small style='color:#666;'>({obj.name_match_score:.0f}%)</small>"
+
+        return format_html(
+            '<table style="border-collapse:collapse;font-size:13px;width:100%;">'
+            '<thead>'
+            '<tr>'
+            '<th style="text-align:left;padding:4px 8px;background:#f0f0f0;border:1px solid #ddd;"></th>'
+            '<th style="text-align:left;padding:4px 8px;background:#f0f0f0;border:1px solid #ddd;">Declared (profile)</th>'
+            '<th style="text-align:left;padding:4px 8px;background:#f0f0f0;border:1px solid #ddd;">Provider (Aadhaar)</th>'
+            '<th style="text-align:left;padding:4px 8px;background:#f0f0f0;border:1px solid #ddd;">Result</th>'
+            '</tr>'
+            '</thead>'
+            '<tbody>'
+            '<tr>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;font-weight:bold;">Full Name</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">{}</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">{}</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">'
+            '<span style="background:{};color:white;padding:2px 7px;border-radius:3px;font-size:10px;">{}</span>{}'
+            '</td>'
+            '</tr>'
+            '<tr>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;font-weight:bold;">Date of Birth</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">{}</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">{}</td>'
+            '<td style="padding:4px 8px;border:1px solid #ddd;">'
+            '<span style="background:{};color:white;padding:2px 7px;border-radius:3px;font-size:10px;">{}</span>'
+            '</td>'
+            '</tr>'
+            '</tbody>'
+            '</table>',
+            declared_name, aadhaar_name,
+            name_colors.get(name_status, "#6c757d"), name_status.replace("_", " ").title(), score_html,
+            declared_dob, aadhaar_dob,
+            dob_colors.get(dob_status, "#6c757d"), dob_status.replace("_", " ").title(),
+        )
+
+    declared_identity_summary.short_description = "Identity Comparison"
 
     # ---------- List display helpers ----------
 
@@ -765,12 +838,20 @@ class KYCAdmin(admin.ModelAdmin):
         )
 
     def aadhaar_api_response_display(self, obj):
-        return self._json_pretty_block(obj.aadhaar_api_response)
+        raw = obj.aadhaar_api_response
+        if raw and isinstance(raw, dict):
+            SENSITIVE = {'aadhaar_number', 'uid', 'masked_aadhaar', 'xml_data', 'zip_data', 'file_url'}
+            safe = {k: v for k, v in raw.items() if k not in SENSITIVE}
+            num = raw.get('aadhaar_number') or raw.get('uid', '')
+            if num and len(str(num)) >= 4:
+                safe['aadhaar_last4'] = str(num)[-4:]
+            return self._json_pretty_block(safe)
+        return self._json_pretty_block(raw)
 
-    aadhaar_api_response_display.short_description = "Aadhaar API Response (Formatted)"
+    aadhaar_api_response_display.short_description = "Aadhaar API Response (Sanitized)"
 
     def pan_api_response_display(self, obj):
-        return self._json_prety_block(obj.pan_api_response)
+        return self._json_pretty_block(obj.pan_api_response)
 
     pan_api_response_display.short_description = "PAN API Response (Formatted)"
 

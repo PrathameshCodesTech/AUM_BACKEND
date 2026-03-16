@@ -193,6 +193,8 @@ class AadhaarSession(TimestampedModel):
         ('completed', 'Completed'),
         ('failed', 'Failed'),
         ('expired', 'Expired'),
+        ('needs_review', 'Needs Review'),
+        ('abandoned', 'Abandoned'),
     ]
 
     user = models.ForeignKey(

@@ -10,14 +10,12 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from .models import KYC, AadhaarSession
 from .serializers import (
-
     PANVerifySerializer,
     BankVerifySerializer,
     KYCSerializer,
     KYCStatusSerializer,
-    KYCApprovalSerializer,
 )
-from accounts.permissions import HasPermission,IsAdmin
+from accounts.permissions import IsAdmin
 import logging
 from .serializers import AadhaarPDFUploadSerializer
 from rest_framework import serializers
@@ -50,6 +48,15 @@ class AadhaarDigiLockerInitView(APIView):
                 }, status=status.HTTP_400_BAD_REQUEST)
         except KYC.DoesNotExist:
             pass
+
+        # Abandon any open sessions for this user before starting a new one.
+        # This ensures one active attempt at a time and keeps admin/backend clean.
+        abandoned = AadhaarSession.objects.filter(
+            user=user,
+            status__in=['initiated', 'needs_review']
+        ).update(status='abandoned')
+        if abandoned:
+            logger.info("DigiLocker init: abandoned %d prior open session(s) for user %s", abandoned, user.id)
 
         try:
             result = SurepassKYC().digilocker_initialize()
@@ -149,7 +156,17 @@ class AadhaarDigiLockerFinalizeView(APIView):
         if session.status == 'completed':
             return Response({
                 'success': False,
-                'message': 'This session has already been finalized.'
+                'message': 'This session has already been finalized.',
+                'retry_required': True,
+                'session_reusable': False,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if session.status in ('failed', 'expired', 'abandoned', 'needs_review'):
+            return Response({
+                'success': False,
+                'message': 'This Aadhaar session is no longer valid. Please start a fresh DigiLocker attempt.',
+                'retry_required': True,
+                'session_reusable': False,
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
@@ -160,7 +177,9 @@ class AadhaarDigiLockerFinalizeView(APIView):
             session.save(update_fields=['status'])
             return Response({
                 'success': False,
-                'message': 'Failed to download Aadhaar data from DigiLocker.'
+                'message': 'Failed to download Aadhaar data from DigiLocker.',
+                'retry_required': True,
+                'session_reusable': False,
             }, status=status.HTTP_502_BAD_GATEWAY)
 
         data = result.get('data', {})
@@ -170,19 +189,83 @@ class AadhaarDigiLockerFinalizeView(APIView):
             session.save(update_fields=['status', 'raw_result_payload'])
             return Response({
                 'success': False,
-                'message': 'No Aadhaar data returned. User may not have completed DigiLocker authorization.'
+                'message': 'No Aadhaar data returned. User may not have completed DigiLocker authorization.',
+                'retry_required': True,
+                'session_reusable': False,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Extract fields from Surepass DigiLocker response
-        full_name = data.get('full_name') or data.get('name', '')
-        dob_raw = data.get('dob') or data.get('date_of_birth', '')
-        gender_raw = (data.get('gender') or data.get('sex', '')).upper()
-        aadhaar_number_raw = data.get('aadhaar_number') or data.get('uid', '')
+        # ── Step 1: Require legal profile identity before any comparison ───────
+        profile_name = (user.legal_full_name or '').strip()
+        profile_dob  = user.date_of_birth
+
+        if not profile_name:
+            return Response({
+                'success': False,
+                'message': (
+                    'Your legal name is not set. Please go to your profile, enter your '
+                    'first and last name exactly as they appear on your Aadhaar/PAN, '
+                    'then return here to verify.'
+                )
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not profile_dob:
+            return Response({
+                'success': False,
+                'message': (
+                    'Your date of birth is not set. Please complete your profile '
+                    '(date of birth as per Aadhaar/PAN) before verifying Aadhaar.'
+                )
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── Step 2: Extract fields from Surepass DigiLocker response ─────────
+        digilocker_metadata = data.get('digilocker_metadata', {})
+        if not isinstance(digilocker_metadata, dict):
+            digilocker_metadata = {}
+
+        aadhaar_xml_data = data.get('aadhaar_xml_data', {})
+        if not isinstance(aadhaar_xml_data, dict):
+            aadhaar_xml_data = {}
+
+        full_name = (
+            data.get('full_name')
+            or data.get('name')
+            or aadhaar_xml_data.get('full_name')
+            or aadhaar_xml_data.get('name')
+            or digilocker_metadata.get('full_name')
+            or digilocker_metadata.get('name')
+            or ''
+        ).strip()
+        dob_raw = (
+            data.get('dob')
+            or data.get('date_of_birth')
+            or aadhaar_xml_data.get('dob')
+            or aadhaar_xml_data.get('date_of_birth')
+            or digilocker_metadata.get('dob')
+            or digilocker_metadata.get('date_of_birth')
+            or ''
+        )
+        gender_raw = (
+            data.get('gender')
+            or data.get('sex')
+            or aadhaar_xml_data.get('gender')
+            or aadhaar_xml_data.get('sex')
+            or digilocker_metadata.get('gender')
+            or digilocker_metadata.get('sex')
+            or ''
+        ).upper()
+        aadhaar_number_raw = (
+            data.get('aadhaar_number')
+            or data.get('uid')
+            or aadhaar_xml_data.get('masked_aadhaar')
+            or aadhaar_xml_data.get('aadhaar_number')
+            or aadhaar_xml_data.get('uid')
+            or aadhaar_xml_data.get('uniqueness_id')
+            or ''
+        )
 
         # Parse DOB — try ISO (YYYY-MM-DD) then DD/MM/YYYY
         aadhaar_dob_date = None
         if dob_raw:
-            from datetime import date
             for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
                 try:
                     from datetime import datetime
@@ -192,7 +275,12 @@ class AadhaarDigiLockerFinalizeView(APIView):
                     continue
 
         # Build address string from dict or plain string
-        addr_raw = data.get('address', '')
+        addr_raw = (
+            data.get('address')
+            or aadhaar_xml_data.get('address')
+            or aadhaar_xml_data.get('full_address')
+            or ''
+        )
         if isinstance(addr_raw, dict):
             parts = [
                 addr_raw.get('house', ''), addr_raw.get('street', ''),
@@ -203,30 +291,157 @@ class AadhaarDigiLockerFinalizeView(APIView):
             address_str = ', '.join(p for p in parts if p)
             if pincode:
                 address_str += f' - {pincode}'
-            # Also update KYC address breakdown fields
-            aadhaar_city = addr_raw.get('vtc', '') or addr_raw.get('dist', '')
-            aadhaar_state = addr_raw.get('state', '')
+            aadhaar_city    = addr_raw.get('vtc', '') or addr_raw.get('dist', '')
+            aadhaar_state   = addr_raw.get('state', '')
             aadhaar_pincode = pincode
         else:
             address_str = addr_raw or ''
             aadhaar_city = aadhaar_state = aadhaar_pincode = ''
 
-        # Update or create KYC record — only write real model fields
+        # ── Step 3: Sanitize API response before storage ──────────────────────
+        # Never persist a full Aadhaar number in JSON; keep only audit fields.
+        sanitized_response = {
+            'full_name':    full_name,
+            'dob':          dob_raw,
+            'gender':       gender_raw,
+            'aadhaar_last4': aadhaar_number_raw[-4:] if len(aadhaar_number_raw) >= 4 else aadhaar_number_raw,
+            'address':      addr_raw if isinstance(addr_raw, dict) else {'full': address_str},
+            'client_id':    data.get('client_id', ''),
+            'reference_id': data.get('reference_id', ''),
+            'source': {
+                'digilocker_metadata': {
+                    'name': digilocker_metadata.get('name', ''),
+                    'dob': digilocker_metadata.get('dob', ''),
+                    'gender': digilocker_metadata.get('gender', ''),
+                },
+                'aadhaar_xml_data': {
+                    'full_name': aadhaar_xml_data.get('full_name', ''),
+                    'dob': aadhaar_xml_data.get('dob', ''),
+                    'gender': aadhaar_xml_data.get('gender', ''),
+                    'masked_aadhaar': aadhaar_xml_data.get('masked_aadhaar', ''),
+                },
+            },
+        }
+
+        # ── Step 4: Identity validation ───────────────────────────────────────
+        from .utils import fuzzy_name_match, validate_dob_match
+
+        name_validation = fuzzy_name_match(profile_name, full_name, threshold=0.75)
+        # Only run DOB comparison when Surepass returned a parseable date.
+        # If dob_raw is missing or could not be parsed, dob_validation stays None —
+        # treated as "provider did not return DOB" which must NOT silently pass.
+        dob_validation = validate_dob_match(profile_dob, dob_raw) if (profile_dob and dob_raw and aadhaar_dob_date) else None
+
+        mismatch_errors = {}
+        name_ok = name_validation['match']
+        # DOB is ok only if the provider returned a parseable date AND it matched.
+        # Missing DOB from provider (dob_validation is None) is treated as unverifiable,
+        # not as a pass — we flag it for admin review below.
+        dob_ok = dob_validation['match'] if dob_validation is not None else None  # None = no DOB from provider
+
+        if not name_ok:
+            mismatch_errors['name_mismatch'] = {
+                'profile_name':  profile_name,
+                'aadhaar_name':  full_name,
+                'score':         round(name_validation['score'], 4),
+                'reason':        name_validation.get('reason', ''),
+            }
+        if dob_ok is False:
+            mismatch_errors['dob_mismatch'] = {
+                'profile_dob': str(profile_dob),
+                'aadhaar_dob': dob_raw,
+                'reason':      dob_validation.get('reason', ''),
+            }
+        if dob_ok is None:
+            mismatch_errors['dob_not_returned'] = {
+                'reason': 'Surepass did not return a usable date of birth for this Aadhaar.',
+            }
+
+        # ── Step 5: Persist KYC regardless; only set verified on full match ───
         kyc, _ = KYC.objects.get_or_create(user=user)
-        kyc.aadhaar_verified = True
+
+        # Always write returned data and validation state
+        kyc.aadhaar_name       = full_name
+        kyc.aadhaar_dob        = aadhaar_dob_date
+        kyc.aadhaar_gender     = gender_raw
+        kyc.aadhaar_number     = aadhaar_number_raw[-4:] if len(aadhaar_number_raw) >= 4 else aadhaar_number_raw
+        kyc.aadhaar_address    = address_str
+        kyc.aadhaar_api_response = sanitized_response
+        kyc.name_match_score   = round(name_validation['score'] * 100, 2)
+        kyc.validation_errors  = mismatch_errors
+
+        if aadhaar_city  and not kyc.city:    kyc.city    = aadhaar_city
+        if aadhaar_state and not kyc.state:   kyc.state   = aadhaar_state
+        if aadhaar_pincode and not kyc.pincode: kyc.pincode = aadhaar_pincode
+
+        dob_provider_missing = 'dob_not_returned' in mismatch_errors
+        hard_mismatch = 'name_mismatch' in mismatch_errors or 'dob_mismatch' in mismatch_errors
+
+        if hard_mismatch:
+            # Definitive identity mismatch — reject outright, do NOT mark verified
+            kyc.name_validation_status = 'failed' if not name_ok else 'passed'
+            kyc.dob_validation_status  = 'failed' if dob_ok is False else 'passed'
+            kyc.save()
+
+            session.status = 'failed'
+            session.raw_result_payload = result
+            session.save(update_fields=['status', 'raw_result_payload'])
+
+            reasons = []
+            if 'name_mismatch' in mismatch_errors:
+                m = mismatch_errors['name_mismatch']
+                reasons.append(
+                    f"Name mismatch: your profile name '{profile_name}' does not match "
+                    f"Aadhaar name '{full_name}' (score {m['score']:.0%}). "
+                    "Please update your profile legal name to exactly match your Aadhaar."
+                )
+            if 'dob_mismatch' in mismatch_errors:
+                reasons.append(
+                    "Date of birth mismatch: your profile DOB does not match the DOB on your Aadhaar."
+                )
+
+            return Response({
+                'success': False,
+                'message': ' '.join(reasons),
+                'mismatch': mismatch_errors,
+                'retry_required': True,
+                'session_reusable': False,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if dob_provider_missing:
+            # Name matched but provider returned no DOB — cannot auto-verify.
+            # Save what we have and route to admin review; do NOT set aadhaar_verified.
+            kyc.name_validation_status = 'passed'
+            kyc.dob_validation_status  = 'needs_review'
+            kyc.status = 'under_review'
+            kyc.save()
+
+            session.status = 'needs_review'
+            session.raw_result_payload = result
+            session.save(update_fields=['status', 'raw_result_payload'])
+
+            logger.warning(
+                "DigiLocker finalize for user %s: name matched but Surepass returned no DOB. "
+                "Routed to admin review without marking aadhaar_verified.",
+                user.id,
+            )
+            return Response({
+                'success': False,
+                'needs_review': True,
+                'message': (
+                    'Your name was verified but the Aadhaar provider did not return your date of birth. '
+                    'Your KYC has been sent for admin review. You will be notified once it is confirmed.'
+                ),
+                'retry_required': True,
+                'session_reusable': False,
+            }, status=status.HTTP_202_ACCEPTED)
+
+        # Full match (name ✓ and DOB ✓) — mark verified
+        kyc.aadhaar_verified    = True
         kyc.aadhaar_verified_at = timezone.now()
-        kyc.aadhaar_name = full_name
-        kyc.aadhaar_dob = aadhaar_dob_date
-        kyc.aadhaar_gender = gender_raw
-        kyc.aadhaar_number = aadhaar_number_raw[-4:] if len(aadhaar_number_raw) >= 4 else aadhaar_number_raw
-        kyc.aadhaar_address = address_str
-        kyc.aadhaar_api_response = data
-        if aadhaar_city and not kyc.city:
-            kyc.city = aadhaar_city
-        if aadhaar_state and not kyc.state:
-            kyc.state = aadhaar_state
-        if aadhaar_pincode and not kyc.pincode:
-            kyc.pincode = aadhaar_pincode
+        kyc.name_validation_status = 'passed'
+        kyc.dob_validation_status  = 'passed'
+        kyc.status = 'under_review'
         kyc.save()
 
         # Mark session as completed
@@ -239,9 +454,9 @@ class AadhaarDigiLockerFinalizeView(APIView):
             'success': True,
             'message': 'Aadhaar verified successfully via DigiLocker.',
             'data': {
-                'full_name': full_name,
-                'dob': dob_raw,
-                'gender': gender_raw,
+                'full_name':     full_name,
+                'dob':           dob_raw,
+                'gender':        gender_raw,
                 'aadhaar_last4': kyc.aadhaar_number,
             },
             'kyc_updated': True,
@@ -606,7 +821,6 @@ class KYCApprovalView(APIView):
             'message': message,
             'data': AdminKYCDetailSerializer(kyc).data
         }, status=status.HTTP_200_OK)    
-
 
 
 

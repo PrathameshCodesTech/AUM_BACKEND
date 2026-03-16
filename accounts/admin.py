@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.db.models import Q
 from django.core.mail import send_mail
 from django.conf import settings
+from django.urls import reverse, NoReverseMatch
 import logging
 from .models import User, Role, Permission, RolePermission
 
@@ -67,6 +68,7 @@ class UserAdmin(BaseUserAdmin):
     # List display
     list_display = [
         'username',
+        'legal_full_name',
         'email',
         'phone',
         'role_badge',
@@ -91,6 +93,7 @@ class UserAdmin(BaseUserAdmin):
         'phone',
         'first_name',
         'last_name',
+        'legal_full_name',
         'city',
         'state',
     ]
@@ -102,15 +105,25 @@ class UserAdmin(BaseUserAdmin):
         ('Authentication', {
             'fields': ('username', 'password')
         }),
-        ('Personal Info', {
+        ('Legal Identity', {
+            'description': (
+                'Canonical compliance identity. '
+                'legal_full_name is derived from first_name + last_name and is locked after Aadhaar verification.'
+            ),
             'fields': (
                 'first_name',
                 'last_name',
+                'legal_full_name',
+                'date_of_birth',
+                'kyc_link',
+            ),
+        }),
+        ('Personal Info', {
+            'fields': (
                 'email',
                 'phone',
                 'phone_verified',
                 'avatar',
-                'date_of_birth',
                 'gender',
             )
         }),
@@ -168,6 +181,7 @@ class UserAdmin(BaseUserAdmin):
         'date_joined',
         'kyc_verified_at',
         'blocked_at',
+        'kyc_link',
     ]
 
     # Custom badge methods
@@ -214,6 +228,32 @@ class UserAdmin(BaseUserAdmin):
                 '<span style="color: #999;">○ Inactive</span>'
             )
     status_badge.short_description = 'Status'
+
+    def kyc_link(self, obj):
+        """Clickable link to the user's KYC record in compliance admin."""
+        try:
+            kyc = obj.kyc
+        except Exception:
+            return format_html('<span style="color:#999;">No KYC record</span>')
+        try:
+            url = reverse('admin:compliance_kyc_change', args=[kyc.id])
+            colors = {
+                'pending': '#ffc107',
+                'under_review': '#17a2b8',
+                'verified': '#28a745',
+                'rejected': '#dc3545',
+            }
+            color = colors.get(kyc.status, '#6c757d')
+            return format_html(
+                '<a href="{}" style="background:{};color:white;padding:3px 10px;'
+                'border-radius:3px;font-size:11px;text-decoration:none;">'
+                '→ View KYC #{} ({})</a>',
+                url, color, kyc.id, kyc.get_status_display(),
+            )
+        except NoReverseMatch:
+            return format_html('<span style="color:#999;">KYC #{}</span>', kyc.id)
+
+    kyc_link.short_description = 'KYC Record'
 
     # Actions
     actions = ['verify_kyc', 'block_users', 'unblock_users',

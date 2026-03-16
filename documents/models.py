@@ -58,6 +58,13 @@ def esign_signed_upload_path(instance, filename):
 class DocumentESignRequest(TimestampedModel):
     """
     Tracks an admin-initiated eSign request for a specific user and document.
+
+    Identity check lifecycle:
+      - identity_check_status='not_checked'  : not yet evaluated
+      - identity_check_status='verified'     : provider returned signer name that matches KYC/profile
+      - identity_check_status='unverified'   : provider gave no signer identity; document is 'signed'
+                                               but identity was NOT strongly validated
+      - identity_check_status='mismatch'     : provider returned a name that does NOT match → status='needs_review'
     """
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -65,6 +72,15 @@ class DocumentESignRequest(TimestampedModel):
         ('signed', 'Signed'),
         ('failed', 'Failed'),
         ('expired', 'Expired'),
+        ('needs_review', 'Needs Review'),       # signed but identity mismatch or unresolvable
+        ('identity_mismatch', 'Identity Mismatch'),  # explicit hard mismatch
+    ]
+
+    IDENTITY_CHECK_CHOICES = [
+        ('not_checked', 'Not Checked'),
+        ('verified', 'Verified'),
+        ('unverified', 'Unverified'),      # provider gave no identity info
+        ('mismatch', 'Mismatch'),          # provider name does not match KYC
     ]
 
     document = models.ForeignKey(
@@ -108,6 +124,20 @@ class DocumentESignRequest(TimestampedModel):
     raw_status_payload = models.JSONField(blank=True, null=True)
     raw_signed_doc_payload = models.JSONField(blank=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
+
+    # Identity verification fields — populated during eSign refresh
+    signer_name_returned = models.CharField(
+        max_length=255, blank=True,
+        help_text="Signer name returned by the eSign provider (if any)"
+    )
+    identity_check_status = models.CharField(
+        max_length=20, choices=IDENTITY_CHECK_CHOICES, default='not_checked',
+        help_text="Result of comparing provider signer identity against KYC/profile"
+    )
+    identity_mismatch_reason = models.TextField(
+        blank=True,
+        help_text="Explanation when identity_check_status is mismatch or unverified"
+    )
 
     class Meta:
         ordering = ['-created_at']
