@@ -416,8 +416,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = User(**validated_data)
 
-        # ✅ Generate username from first_name
+        # Generate username from first_name
         user.username = generate_unique_username(user.first_name)
+
+        # Derive legal_full_name from split fields
+        parts = [user.first_name or '', user.last_name or '']
+        derived = ' '.join(filter(None, parts)).strip()
+        if derived:
+            user.legal_full_name = derived
 
         # Password not required
         user.set_unusable_password()
