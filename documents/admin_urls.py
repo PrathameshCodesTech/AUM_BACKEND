@@ -9,6 +9,7 @@ from .admin_views import (
     AdminESignListView,
     AdminESignRefreshView,
     AdminESignApproveView,
+    AdminDocumentPageCountView,
 )
 
 urlpatterns = [
@@ -17,6 +18,7 @@ urlpatterns = [
     path('users/', AdminUsersDropdownView.as_view(), name='admin-document-users'),
     path('properties/', AdminPropertiesDropdownView.as_view(), name='admin-document-properties'),
     path('<int:doc_id>/', AdminDocumentDeleteView.as_view(), name='admin-document-delete'),
+    path('<int:doc_id>/page-count/', AdminDocumentPageCountView.as_view(), name='admin-document-page-count'),
     # eSign
     path('esign/', AdminESignListView.as_view(), name='admin-esign-list'),
     path('esign/request/', AdminESignRequestView.as_view(), name='admin-esign-request'),
