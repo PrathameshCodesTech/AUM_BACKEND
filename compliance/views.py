@@ -17,7 +17,6 @@ from .serializers import (
 )
 from accounts.permissions import IsAdmin
 import logging
-from .serializers import AadhaarPDFUploadSerializer
 from rest_framework import serializers
 
 logger = logging.getLogger(__name__)
@@ -38,13 +37,13 @@ class AadhaarDigiLockerInitView(APIView):
         from .services.kyc_service import SurepassKYC
         user = request.user
 
-        # Prevent re-init if already verified
+        # Prevent re-init if already locked by admin
         try:
             kyc = KYC.objects.get(user=user)
-            if kyc.aadhaar_verified:
+            if kyc.aadhaar_locked:
                 return Response({
                     'success': False,
-                    'message': 'Aadhaar already verified.'
+                    'message': 'Aadhaar is already approved and locked by admin. Contact support to unlock.'
                 }, status=status.HTTP_400_BAD_REQUEST)
         except KYC.DoesNotExist:
             pass
@@ -357,202 +356,101 @@ class AadhaarDigiLockerFinalizeView(APIView):
                 'reason': 'Surepass did not return a usable date of birth for this Aadhaar.',
             }
 
-        # ── Step 5: Persist KYC regardless; only set verified on full match ───
+        # ── Step 5: Persist KYC always; only set verified on full match ────────
         kyc, _ = KYC.objects.get_or_create(user=user)
 
         # Always write returned data and validation state
-        kyc.aadhaar_name       = full_name
-        kyc.aadhaar_dob        = aadhaar_dob_date
-        kyc.aadhaar_gender     = gender_raw
-        kyc.aadhaar_number     = aadhaar_number_raw[-4:] if len(aadhaar_number_raw) >= 4 else aadhaar_number_raw
-        kyc.aadhaar_address    = address_str
+        kyc.aadhaar_name         = full_name
+        kyc.aadhaar_dob          = aadhaar_dob_date
+        kyc.aadhaar_gender       = gender_raw
+        kyc.aadhaar_number       = aadhaar_number_raw[-4:] if len(aadhaar_number_raw) >= 4 else aadhaar_number_raw
+        kyc.aadhaar_address      = address_str
         kyc.aadhaar_api_response = sanitized_response
-        kyc.name_match_score   = round(name_validation['score'] * 100, 2)
-        kyc.validation_errors  = mismatch_errors
+        kyc.name_match_score     = round(name_validation['score'] * 100, 2)
+        kyc.validation_errors    = mismatch_errors
 
-        if aadhaar_city  and not kyc.city:    kyc.city    = aadhaar_city
-        if aadhaar_state and not kyc.state:   kyc.state   = aadhaar_state
+        if aadhaar_city   and not kyc.city:    kyc.city    = aadhaar_city
+        if aadhaar_state  and not kyc.state:   kyc.state   = aadhaar_state
         if aadhaar_pincode and not kyc.pincode: kyc.pincode = aadhaar_pincode
 
-        dob_provider_missing = 'dob_not_returned' in mismatch_errors
-        hard_mismatch = 'name_mismatch' in mismatch_errors or 'dob_mismatch' in mismatch_errors
+        # any mismatch or missing data — used to set needs_review in response
 
-        if hard_mismatch:
-            # Definitive identity mismatch — reject outright, do NOT mark verified
-            kyc.name_validation_status = 'failed' if not name_ok else 'passed'
-            kyc.dob_validation_status  = 'failed' if dob_ok is False else 'passed'
-            kyc.save()
 
-            session.status = 'failed'
-            session.raw_result_payload = result
-            session.save(update_fields=['status', 'raw_result_payload'])
+        # Set name/dob validation statuses
+        kyc.name_validation_status = 'passed' if name_ok else 'failed'
+        if dob_ok is True:
+            kyc.dob_validation_status = 'passed'
+        elif dob_ok is False:
+            kyc.dob_validation_status = 'failed'
+        else:
+            # dob_ok is None — provider did not return DOB
+            kyc.dob_validation_status = 'needs_review'
 
-            reasons = []
-            if 'name_mismatch' in mismatch_errors:
-                m = mismatch_errors['name_mismatch']
-                reasons.append(
-                    f"Name mismatch: your profile name '{profile_name}' does not match "
-                    f"Aadhaar name '{full_name}' (score {m['score']:.0%}). "
-                    "Please update your profile legal name to exactly match your Aadhaar."
-                )
-            if 'dob_mismatch' in mismatch_errors:
-                reasons.append(
-                    "Date of birth mismatch: your profile DOB does not match the DOB on your Aadhaar."
-                )
+        # Set aadhaar_verified only when both name and DOB matched
+        full_match = name_ok and (dob_ok is True)
+        if full_match:
+            kyc.aadhaar_verified    = True
+            kyc.aadhaar_verified_at = timezone.now()
 
-            return Response({
-                'success': False,
-                'message': ' '.join(reasons),
-                'mismatch': mismatch_errors,
-                'retry_required': True,
-                'session_reusable': False,
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        if dob_provider_missing:
-            # Name matched but provider returned no DOB — cannot auto-verify.
-            # Save what we have and route to admin review; do NOT set aadhaar_verified.
-            kyc.name_validation_status = 'passed'
-            kyc.dob_validation_status  = 'needs_review'
-            kyc.status = 'under_review'
-            kyc.save()
-
-            session.status = 'needs_review'
-            session.raw_result_payload = result
-            session.save(update_fields=['status', 'raw_result_payload'])
-
-            logger.warning(
-                "DigiLocker finalize for user %s: name matched but Surepass returned no DOB. "
-                "Routed to admin review without marking aadhaar_verified.",
-                user.id,
-            )
-            return Response({
-                'success': False,
-                'needs_review': True,
-                'message': (
-                    'Your name was verified but the Aadhaar provider did not return your date of birth. '
-                    'Your KYC has been sent for admin review. You will be notified once it is confirmed.'
-                ),
-                'retry_required': True,
-                'session_reusable': False,
-            }, status=status.HTTP_202_ACCEPTED)
-
-        # Full match (name ✓ and DOB ✓) — mark verified
-        kyc.aadhaar_verified    = True
-        kyc.aadhaar_verified_at = timezone.now()
-        kyc.name_validation_status = 'passed'
-        kyc.dob_validation_status  = 'passed'
+        # Always route to submitted / under_review; admin will approve & lock
+        kyc.aadhaar_review_status = 'submitted'
         kyc.status = 'under_review'
         kyc.save()
 
-        # Mark session as completed
+        # Mark session as completed always (we got data back)
         session.status = 'completed'
         session.raw_result_payload = result
         session.completed_at = timezone.now()
         session.save(update_fields=['status', 'raw_result_payload', 'completed_at'])
 
-        return Response({
-            'success': True,
-            'message': 'Aadhaar verified successfully via DigiLocker.',
-            'data': {
-                'full_name':     full_name,
-                'dob':           dob_raw,
-                'gender':        gender_raw,
-                'aadhaar_last4': kyc.aadhaar_number,
-            },
-            'kyc_updated': True,
-        }, status=status.HTTP_200_OK)
+        response_data = {
+            'full_name':     full_name,
+            'dob':           dob_raw,
+            'gender':        gender_raw,
+            'aadhaar_last4': kyc.aadhaar_number,
+        }
+
+        if full_match:
+            logger.info(
+                "DigiLocker finalize for user %s: full match — submitted for admin review.",
+                user.id,
+            )
+            return Response({
+                'success': True,
+                'message': 'Aadhaar data submitted for admin review.',
+                'needs_review': False,
+                'data': response_data,
+                'kyc_updated': True,
+            }, status=status.HTTP_200_OK)
+        else:
+            # Mismatches or missing DOB — still success (data saved), but needs_review=True
+            logger.warning(
+                "DigiLocker finalize for user %s: mismatch/missing data — submitted for admin review. errors=%s",
+                user.id, mismatch_errors,
+            )
+            return Response({
+                'success': True,
+                'message': 'Your Aadhaar has been submitted for admin review.',
+                'needs_review': True,
+                'mismatch': mismatch_errors,
+                'data': response_data,
+                'kyc_updated': True,
+            }, status=status.HTTP_200_OK)
 
 
 class AadhaarPDFUploadView(APIView):
     """
     POST /api/kyc/aadhaar/upload-pdf/
-    Upload and verify eAadhaar PDF
+    Legacy endpoint — disabled. Aadhaar verification is now via DigiLocker only.
     """
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
-    
+
     def post(self, request):
-        from django.utils import timezone
-        from datetime import timedelta
-        from compliance.models import KYC
-        
-        # Check retry limits
-        try:
-            kyc = KYC.objects.get(user=request.user)
-            
-            # Check if user has exceeded retry limit
-            if kyc.aadhaar_retry_count >= 5:
-                # Check if 10 minutes have passed since last retry
-                if kyc.aadhaar_last_retry_at:
-                    time_since_retry = timezone.now() - kyc.aadhaar_last_retry_at
-                    if time_since_retry < timedelta(minutes=10):
-                        remaining_time = 10 - int(time_since_retry.total_seconds() / 60)
-                        return Response({
-                            'success': False,
-                            'error': 'retry_limit_exceeded',
-                            'message': f'Maximum retry limit reached. Please try again after {remaining_time} minutes.',
-                            'retry_after': remaining_time
-                        }, status=status.HTTP_429_TOO_MANY_REQUESTS)
-                    else:
-                        # Reset retry count after 10 minutes
-                        kyc.aadhaar_retry_count = 0
-                        kyc.save()
-        except KYC.DoesNotExist:
-            pass  # KYC will be created in serializer
-        
-        serializer = AadhaarPDFUploadSerializer(data=request.data)
-        
-        if not serializer.is_valid():
-            return Response({
-                'success': False,
-                'errors': serializer.errors
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            result = serializer.verify(request.user)
-            
-            # Reset retry count on success
-            kyc = KYC.objects.get(user=request.user)
-            kyc.aadhaar_retry_count = 0
-            kyc.aadhaar_last_retry_at = None
-            kyc.save()
-            
-            return Response({
-                'success': True,
-                'message': 'Aadhaar verified successfully',
-                'data': result['data'],
-                'kyc_updated': result['kyc_updated']
-            }, status=status.HTTP_200_OK)
-            
-        except serializers.ValidationError as e:
-            # Increment retry count on failure
-            try:
-                kyc = KYC.objects.get(user=request.user)
-                kyc.aadhaar_retry_count += 1
-                kyc.aadhaar_last_retry_at = timezone.now()
-                kyc.save()
-                
-                retries_left = 5 - kyc.aadhaar_retry_count
-                
-                logger.error(f"❌ Aadhaar verification error: {e.detail}")
-                return Response({
-                    'success': False,
-                    'message': str(e.detail),
-                    'retries_left': retries_left if retries_left > 0 else 0
-                }, status=status.HTTP_400_BAD_REQUEST)
-            except KYC.DoesNotExist:
-                pass
-                
-            return Response({
-                'success': False,
-                'message': str(e.detail)
-            }, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            logger.error(f"❌ Unexpected error: {str(e)}")
-            return Response({
-                'success': False,
-                'message': 'An unexpected error occurred'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({
+            'success': False,
+            'message': 'Aadhaar verification is now available only via DigiLocker. Please use the DigiLocker flow to verify your Aadhaar.',
+        }, status=status.HTTP_410_GONE)
 
 # ========================================
 # PAN VERIFICATION APIs
@@ -563,26 +461,45 @@ class PANVerifyView(APIView):
     Verify PAN card details
     """
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request):
+        # Lock gate: prevent re-verify if PAN is already locked by admin
+        try:
+            kyc = KYC.objects.get(user=request.user)
+            if kyc.pan_locked:
+                return Response({
+                    'success': False,
+                    'message': 'PAN is already approved and locked by admin.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except KYC.DoesNotExist:
+            pass
+
         serializer = PANVerifySerializer(data=request.data)
-        
+
         if not serializer.is_valid():
             return Response({
                 'success': False,
                 'errors': serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
-            result = serializer.verify(request.user)  # ← NEW METHOD
-            
+            result = serializer.verify(request.user)
+
+            # Set pan_review_status to submitted after successful verify
+            try:
+                kyc = KYC.objects.get(user=request.user)
+                kyc.pan_review_status = 'submitted'
+                kyc.save(update_fields=['pan_review_status', 'updated_at'])
+            except KYC.DoesNotExist:
+                pass
+
             return Response({
                 'success': True,
-                'message': 'PAN verified successfully',
+                'message': 'PAN details received and submitted for review.',
                 'data': result['data'],
                 'kyc_updated': result['kyc_updated']
             }, status=status.HTTP_200_OK)
-            
+
         except serializers.ValidationError as e:
             logger.error(f"❌ PAN verification error: {e.detail}")
             return Response({
@@ -693,12 +610,38 @@ class MyKYCStatusView(APIView):
                 'success': True,
                 'data': {
                     'status': 'pending',
+                    # Aadhaar
                     'aadhaar_verified': False,
+                    'aadhaar_locked': False,
+                    'aadhaar_review_status': 'not_started',
+                    'aadhaar_name': None,
+                    'aadhaar_dob': None,
+                    'aadhaar_gender': '',
+                    'aadhaar_address': '',
+                    'aadhaar_number': '',
+                    'aadhaar_review_note': None,
+                    # PAN
                     'pan_verified': False,
+                    'pan_locked': False,
+                    'pan_review_status': 'not_started',
+                    'pan_name': None,
+                    'pan_dob': None,
+                    'pan_number': '',
+                    'pan_provider_status': None,
+                    'pan_name_status': None,
+                    'pan_dob_status': None,
+                    'pan_aadhaar_seeding_status': None,
+                    'pan_review_note': None,
+                    # Bank
                     'bank_verified': False,
+                    # Legacy / informational
                     'pan_aadhaar_linked': False,
                     'is_complete': False,
-                    'rejection_reason': None
+                    'rejection_reason': None,
+                    # Match fields
+                    'name_match_score': None,
+                    'name_validation_status': 'pending',
+                    'dob_validation_status': 'pending',
                 }
             }, status=status.HTTP_200_OK)
 
@@ -813,15 +756,127 @@ class KYCApprovalView(APIView):
             message = 'KYC rejected'
         
         kyc.save()
-        
+
         logger.info(f"✅ KYC {action}d for user {kyc.user.username} by {request.user.username}")
-        
+
         return Response({
             'success': True,
             'message': message,
             'data': AdminKYCDetailSerializer(kyc).data
-        }, status=status.HTTP_200_OK)    
+        }, status=status.HTTP_200_OK)
 
 
+class AdminAadhaarLockView(APIView):
+    """
+    POST /api/kyc/admin/<kyc_id>/aadhaar/lock/
+    Admin: approve_lock | reject | needs_retry | unlock
+    Body: {"action": "approve_lock", "note": "..."}
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
 
+    def post(self, request, kyc_id):
+        try:
+            kyc = KYC.objects.get(id=kyc_id)
+        except KYC.DoesNotExist:
+            return Response({'success': False, 'message': 'KYC not found'}, status=404)
+
+        action = request.data.get('action')
+        note = request.data.get('note', '')
+
+        if action == 'approve_lock':
+            kyc.aadhaar_locked = True
+            kyc.aadhaar_locked_at = timezone.now()
+            kyc.aadhaar_locked_by = request.user
+            kyc.aadhaar_review_status = 'approved_locked'
+            kyc.aadhaar_review_note = note
+            kyc.aadhaar_verified = True
+            kyc.aadhaar_verified_at = timezone.now()
+            message = 'Aadhaar approved and locked.'
+        elif action == 'reject':
+            kyc.aadhaar_review_status = 'rejected'
+            kyc.aadhaar_review_note = note
+            kyc.aadhaar_locked = False
+            kyc.aadhaar_locked_at = None
+            kyc.aadhaar_locked_by = None
+            kyc.aadhaar_verified = False
+            message = 'Aadhaar rejected.'
+        elif action == 'needs_retry':
+            kyc.aadhaar_review_status = 'needs_retry'
+            kyc.aadhaar_review_note = note
+            kyc.aadhaar_locked = False
+            kyc.aadhaar_locked_at = None
+            kyc.aadhaar_locked_by = None
+            message = 'Aadhaar marked as needs retry.'
+        elif action == 'unlock':
+            kyc.aadhaar_locked = False
+            kyc.aadhaar_locked_at = None
+            kyc.aadhaar_locked_by = None
+            kyc.aadhaar_review_status = 'verified_unlocked'
+            kyc.aadhaar_review_note = note
+            message = 'Aadhaar unlocked.'
+        else:
+            return Response({
+                'success': False,
+                'message': 'Invalid action. Use: approve_lock, reject, needs_retry, unlock'
+            }, status=400)
+
+        kyc.save()
+        logger.info("Admin %s performed aadhaar action '%s' on KYC %s", request.user.id, action, kyc_id)
+        return Response({'success': True, 'message': message}, status=200)
+
+
+class AdminPANLockView(APIView):
+    """
+    POST /api/kyc/admin/<kyc_id>/pan/lock/
+    Admin: approve_lock | reject | needs_retry | unlock
+    Body: {"action": "approve_lock", "note": "..."}
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, kyc_id):
+        try:
+            kyc = KYC.objects.get(id=kyc_id)
+        except KYC.DoesNotExist:
+            return Response({'success': False, 'message': 'KYC not found'}, status=404)
+
+        action = request.data.get('action')
+        note = request.data.get('note', '')
+
+        if action == 'approve_lock':
+            kyc.pan_locked = True
+            kyc.pan_locked_at = timezone.now()
+            kyc.pan_locked_by = request.user
+            kyc.pan_review_status = 'approved_locked'
+            kyc.pan_review_note = note
+            kyc.pan_verified = True
+            kyc.pan_verified_at = timezone.now()
+            message = 'PAN approved and locked.'
+        elif action == 'reject':
+            kyc.pan_review_status = 'rejected'
+            kyc.pan_review_note = note
+            kyc.pan_locked = False
+            kyc.pan_locked_at = None
+            kyc.pan_locked_by = None
+            kyc.pan_verified = False
+            message = 'PAN rejected.'
+        elif action == 'needs_retry':
+            kyc.pan_review_status = 'needs_retry'
+            kyc.pan_review_note = note
+            kyc.pan_locked = False
+            kyc.pan_locked_at = None
+            kyc.pan_locked_by = None
+            message = 'PAN marked as needs retry.'
+        elif action == 'unlock':
+            kyc.pan_locked = False
+            kyc.pan_locked_at = None
+            kyc.pan_locked_by = None
+            kyc.pan_review_status = 'verified_unlocked'
+            kyc.pan_review_note = note
+            message = 'PAN unlocked.'
+        else:
+            return Response({'success': False, 'message': 'Invalid action.'}, status=400)
+
+        kyc.save()
+        logger.info("Admin %s performed pan action '%s' on KYC %s", request.user.id, action, kyc_id)
+        return Response({'success': True, 'message': message}, status=200)
 

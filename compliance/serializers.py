@@ -14,186 +14,6 @@ logger = logging.getLogger(__name__)
 
 
 # ========================================
-# AADHAAR VERIFICATION SERIALIZERS
-# ========================================
-
-# ========================================
-# AADHAAR VERIFICATION (PDF UPLOAD)
-# ========================================
-
-class AadhaarPDFUploadSerializer(serializers.Serializer):
-    """Serializer for Aadhaar PDF upload"""
-    pdf_file = serializers.FileField(required=True)
-    yob = serializers.CharField(required=False, max_length=4, allow_blank=True)
-    full_name = serializers.CharField(required=False, max_length=255, allow_blank=True)
-    pincode = serializers.CharField(required=False, max_length=6, allow_blank=True)  # 👈 ADD THIS
-
-
-    def validate_pdf_file(self, value):
-        if not value.name.lower().endswith('.pdf'):
-            raise serializers.ValidationError("Only PDF files are allowed")
-        if value.size > 5 * 1024 * 1024:
-            raise serializers.ValidationError("File size must be less than 5MB")
-        return value
-    
-    def validate_yob(self, value):
-        if value and not value.isdigit():
-            raise serializers.ValidationError("Year of birth must be numeric")
-        if value and (int(value) < 1900 or int(value) > 2024):
-            raise serializers.ValidationError("Invalid year of birth")
-        return value
-    
-    def verify(self, user):
-        """Verify Aadhaar PDF and update KYC with validation"""
-        from .services.kyc_service import SurepassKYC
-        from .utils import fuzzy_name_match, validate_dob_match
-        
-        pdf_file = self.validated_data['pdf_file']
-        yob = self.validated_data.get('yob')
-        full_name = self.validated_data.get('full_name')
-        
-        # Step 1: Verify with Surepass
-        pincode = self.validated_data.get('pincode')
-        kyc_service = SurepassKYC()
-        result = kyc_service.verify_aadhaar_pdf(pdf_file, yob, full_name)
-        
-        if not result.get('success'):
-            error_msg = result.get('error', 'Aadhaar verification failed')
-        
-
-             # Better error messages
-            if 'password' in error_msg.lower() or 'unlock' in error_msg.lower():
-                raise serializers.ValidationError(
-                    "Could not unlock PDF. Please ensure you entered the correct Year of Birth (YOB) "
-                    "that matches your Aadhaar card. The YOB is used as the PDF password."
-                )
-            elif 'Invalid eAadhaar PDF' in error_msg:
-                raise serializers.ValidationError(
-                    "Invalid eAadhaar PDF. Please upload a valid eAadhaar PDF downloaded from "
-                    "the official UIDAI website (https://myaadhaar.uidai.gov.in/). "
-                    "The PDF should not be modified or corrupted."
-                )
-            else:
-                raise serializers.ValidationError(error_msg)
-        
-        data = result.get('data', {})
-        
-        # Step 2: Get user's legal identity (source of truth for compliance)
-        # Must use legal_full_name only — username is display name and must never
-        # be used for Aadhaar identity matching.
-        profile_name = user.legal_full_name or ''
-        if not profile_name:
-            raise serializers.ValidationError(
-                "Your legal name is not set. Please go to your profile, enter your "
-                "first and last name exactly as they appear on your Aadhaar/PAN, "
-                "then return here to verify."
-            )
-        profile_dob = user.date_of_birth
-        
-        # Step 3: Extract Aadhaar data
-        # Surepass API returns name in 'full_name' field, not 'name'
-        aadhaar_name = data.get('full_name') or data.get('name', '')
-        aadhaar_dob_str = data.get('dob', '')  # Format: YYYY-MM-DD or DD/MM/YYYY
-        
-        # Step 4: Validate Name Match
-        name_validation = fuzzy_name_match(profile_name, aadhaar_name, threshold=0.75)
-        
-        if not name_validation['match']:
-            # NAME MISMATCH - REJECT
-            error_msg = (
-                f"Name mismatch: Your profile name '{profile_name}' doesn't match "
-                f"Aadhaar name '{aadhaar_name}'. Please ensure your profile name matches your Aadhaar card."
-            )
-            logger.error(f"❌ {error_msg} (Score: {name_validation['score']:.2%})")
-            raise serializers.ValidationError(error_msg)
-        
-        # Step 5: Validate DOB Match
-        if profile_dob and aadhaar_dob_str:
-            dob_validation = validate_dob_match(profile_dob, aadhaar_dob_str)
-            
-            if not dob_validation['match']:
-                # DOB MISMATCH - REJECT
-                error_msg = (
-                    f"Date of birth mismatch: Your profile DOB doesn't match Aadhaar DOB. "
-                    f"Please ensure your profile DOB is correct."
-                )
-                logger.error(f"❌ {error_msg}")
-                raise serializers.ValidationError(error_msg)
-        
-        # Step 6: Validation PASSED - Save data
-        kyc, created = KYC.objects.get_or_create(user=user)
-        
-        # Surepass doesn't always return full aadhaar_number, might return last 4 digits or reference_id
-        aadhaar_num = data.get('aadhaar_number', '') or data.get('last_digits', '') or data.get('reference_id', '')
-        kyc.aadhaar_number = aadhaar_num.replace(' ', '')
-        kyc.aadhaar_name = aadhaar_name
-        
-        # Store DOB
-        # Store DOB (Surepass returns YYYY-MM-DD format)
-        if aadhaar_dob_str:
-            try:
-                from datetime import datetime
-                # Try YYYY-MM-DD format first (Surepass format)
-                kyc.aadhaar_dob = datetime.strptime(aadhaar_dob_str, '%Y-%m-%d').date()
-            except:
-                try:
-                    # Fallback to DD/MM/YYYY format
-                    kyc.aadhaar_dob = datetime.strptime(aadhaar_dob_str, '%d/%m/%Y').date()
-                except:
-                    logger.warning(f"⚠️ Could not parse DOB: {aadhaar_dob_str}")
-                    pass
-        
-        kyc.aadhaar_gender = data.get('gender', '')
-        
-        # Store address
-        # Store address (Surepass returns 'address' object, not 'split_address')
-        address_data = data.get('address', {}) or data.get('split_address', {})
-        if address_data:
-            house = address_data.get('house', '')
-            street = address_data.get('street', '')
-            kyc.address_line1 = f"{house} {street}".strip()
-            kyc.city = address_data.get('vtc', '') or address_data.get('dist', '')
-            kyc.state = address_data.get('state', '')
-            kyc.pincode = address_data.get('zip', '') or data.get('zip', '')
-            
-            # Build full address
-            full_addr = address_data.get('full_address', '')
-            if not full_addr:
-                # Construct from parts
-                addr_parts = [house, street, address_data.get('loc', ''), 
-                             address_data.get('vtc', ''), address_data.get('dist', ''),
-                             address_data.get('state', '')]
-                full_addr = ', '.join([p for p in addr_parts if p])
-            
-            kyc.aadhaar_address = full_addr
-        
-        # Mark as verified
-        kyc.aadhaar_verified = True
-        kyc.aadhaar_verified_at = timezone.now()
-        kyc.aadhaar_api_response = data
-        
-        # Store validation results
-        kyc.name_validation_status = 'passed'
-        kyc.dob_validation_status = 'passed' if profile_dob else 'pending'
-        kyc.name_match_score = round(name_validation['score'] * 100, 2)
-        kyc.validation_errors = {}
-        
-        kyc.status = 'under_review'
-        kyc.save()
-        
-        logger.info(f"✅ Aadhaar verified and validated for user: {user.username} (Name match: {name_validation['score']:.2%})")
-        
-        return {
-            'success': True,
-            'data': data,
-            'kyc_updated': True,
-            'validation': {
-                'name_match': name_validation,
-                'dob_match': dob_validation if profile_dob else {'match': True, 'reason': 'No DOB in profile'}
-            }
-        }
-
-# ========================================
 # PAN VERIFICATION SERIALIZERS
 # ========================================
 
@@ -219,33 +39,31 @@ class PANVerifySerializer(serializers.Serializer):
         return value
     
     def verify(self, user):
-        """Verify PAN using Surepass PAN Advanced V3 with name+DOB from Aadhaar."""
+        """Verify PAN using Surepass PAN Advanced V3.
+
+        PAN is an independent verification flow — it does not require Aadhaar
+        to be submitted first. Returned provider data is stored and submitted
+        for admin review/approval, same as the Aadhaar review-lock model.
+        """
         from .services.kyc_service import SurepassKYC
 
         pan_number = self.validated_data['pan_number']
 
-        # Step 1: Check if Aadhaar is verified; get name + DOB for matching
-        try:
-            kyc = KYC.objects.get(user=user)
-            if not kyc.aadhaar_verified:
-                raise serializers.ValidationError(
-                    "Please verify your Aadhaar before verifying PAN"
-                )
-        except KYC.DoesNotExist:
-            raise serializers.ValidationError(
-                "Please complete Aadhaar verification first"
-            )
+        # Get or create KYC record — PAN can be verified at any time independently.
+        kyc, _ = KYC.objects.get_or_create(user=user)
 
-        # Best source: Aadhaar-verified data; fallback to user compliance fields
+        # Use best available identity data as optional input to Surepass for
+        # improved server-side match quality. Aadhaar data is preferred when
+        # present; falls back to user profile fields. This is NOT a hard gate —
+        # PAN verification proceeds regardless of Aadhaar status.
         signer_name = kyc.aadhaar_name or user.legal_full_name or user.get_full_name() or ''
-        aadhaar_dob = kyc.aadhaar_dob
         signer_dob = ''
-        if aadhaar_dob:
-            signer_dob = aadhaar_dob.strftime('%Y-%m-%d')
+        if kyc.aadhaar_dob:
+            signer_dob = kyc.aadhaar_dob.strftime('%Y-%m-%d')
         elif user.date_of_birth:
             signer_dob = user.date_of_birth.strftime('%Y-%m-%d')
 
-        # Step 2: Verify PAN with Surepass (name+DOB matching done server-side)
+        # Call Surepass PAN Advanced V3
         kyc_service = SurepassKYC()
         result = kyc_service.verify_pan(pan_number, name=signer_name, dob=signer_dob)
 
@@ -254,7 +72,7 @@ class PANVerifySerializer(serializers.Serializer):
 
         data = result.get('data', {})
 
-        # Step 3: Save verified data — pan-adv-v3 field names
+        # Save provider-returned PAN data — pan-adv-v3 field names
         kyc.pan_number = pan_number.upper()
         kyc.pan_name = data.get('name', '')
         pan_dob_str = data.get('dob', '')
@@ -264,33 +82,27 @@ class PANVerifySerializer(serializers.Serializer):
                 kyc.pan_dob = _dt.strptime(pan_dob_str, '%Y-%m-%d').date()
             except Exception:
                 pass
-        kyc.name_validation_status = 'passed'
-        kyc.dob_validation_status = 'passed'
-        # aadhaar_seeding_status is a descriptive string from pan-adv-v3
-        # (e.g. "LINKED", "NOT_LINKED", "NA"). Store raw; treat anything
-        # that isn't an explicit not-linked/NA value as linked.
+
+        # pan_aadhaar_linked is stored as optional informational metadata only.
+        # It is NOT used as a business gate, compliance blocker, or approval condition.
         seeding = data.get('aadhaar_seeding_status', '')
         kyc.pan_aadhaar_linked = bool(seeding) and seeding.upper() not in ('NOT_LINKED', 'NA', 'N', 'NO', '')
-        kyc.pan_verified = True
-        kyc.pan_verified_at = timezone.now()
+
+        # pan_verified is NOT set here — it is set only when admin runs approve_lock.
+        # This mirrors the Aadhaar model: submission ≠ verification; admin approval = verification.
         kyc.pan_api_response = data
         kyc.status = 'under_review'
         kyc.save()
 
         logger.info(
-            f"✅ PAN verified for user: {user.username} "
+            f"✅ PAN submitted for review: user={user.username} "
             f"(name_status={data.get('name_status')}, dob_status={data.get('dob_status')})"
         )
-
-        warning = None
-        if not kyc.pan_aadhaar_linked:
-            warning = "Your PAN is not seeded with Aadhaar. Please link them for better compliance."
 
         return {
             'success': True,
             'data': data,
             'kyc_updated': True,
-            'warning': warning,
         }
 
 
@@ -537,21 +349,107 @@ class KYCSerializer(serializers.ModelSerializer):
 class KYCStatusSerializer(serializers.ModelSerializer):
     """KYC status for user dashboard"""
     is_complete = serializers.SerializerMethodField()
-    
+
+    # App review / lock state  (workflow, not provider data)
+    aadhaar_locked = serializers.BooleanField(read_only=True)
+    aadhaar_review_status = serializers.CharField(read_only=True)
+    pan_locked = serializers.BooleanField(read_only=True)
+    pan_review_status = serializers.CharField(read_only=True)
+
+    # Identity data returned by providers
+    aadhaar_name = serializers.CharField(read_only=True)
+    aadhaar_dob = serializers.DateField(read_only=True)
+    aadhaar_gender = serializers.CharField(read_only=True)
+    aadhaar_address = serializers.CharField(read_only=True)
+    aadhaar_number = serializers.CharField(read_only=True)  # stored as last4 only
+    pan_name = serializers.CharField(read_only=True)
+    pan_dob = serializers.DateField(read_only=True)
+    pan_number = serializers.CharField(read_only=True)
+
+    # PAN provider-returned fields (Surepass PAN Advanced V3 response).
+    # These are distinct from pan_review_status which is the app workflow state.
+    #   pan_provider_status      ← data.pan_status       e.g. "EXISTING AND VALID"
+    #   pan_name_status          ← data.name_status       e.g. "MATCHING" / "NON-MATCHING"
+    #   pan_dob_status           ← data.dob_status        e.g. "MATCHING" / "NON-MATCHING"
+    #   pan_aadhaar_seeding_status ← data.aadhaar_seeding_status e.g. "Operative PAN"
+    pan_provider_status        = serializers.SerializerMethodField()
+    pan_name_status            = serializers.SerializerMethodField()
+    pan_dob_status             = serializers.SerializerMethodField()
+    pan_aadhaar_seeding_status = serializers.SerializerMethodField()
+
+    # Validation signals (Aadhaar name/DOB match)
+    name_match_score = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    name_validation_status = serializers.CharField(read_only=True)
+    dob_validation_status = serializers.CharField(read_only=True)
+
+    # Admin notes visible to user
+    aadhaar_review_note = serializers.CharField(read_only=True)
+    pan_review_note = serializers.CharField(read_only=True)
+
     class Meta:
         model = KYC
         fields = [
             'status',
             'aadhaar_verified',
+            'aadhaar_locked',
+            'aadhaar_review_status',
+            'aadhaar_name',
+            'aadhaar_dob',
+            'aadhaar_gender',
+            'aadhaar_address',
+            'aadhaar_number',
+            'aadhaar_review_note',
             'pan_verified',
+            'pan_locked',
+            'pan_review_status',
+            'pan_name',
+            'pan_dob',
+            'pan_number',
+            'pan_provider_status',
+            'pan_name_status',
+            'pan_dob_status',
+            'pan_aadhaar_seeding_status',
+            'pan_review_note',
             'bank_verified',
             'pan_aadhaar_linked',
             'is_complete',
             'rejection_reason',
+            'name_match_score',
+            'name_validation_status',
+            'dob_validation_status',
         ]
-    
+
     def get_is_complete(self, obj):
         return obj.is_complete()
+
+    def _pan_api_data(self, obj):
+        """Return the data sub-object from stored pan_api_response, or {}."""
+        raw = obj.pan_api_response
+        if not raw or not isinstance(raw, dict):
+            return {}
+        # Surepass may wrap fields under 'data' or store them flat
+        inner = raw.get('data', raw)
+        return inner if isinstance(inner, dict) else raw
+
+    def get_pan_provider_status(self, obj):
+        """Surepass data.pan_status — e.g. 'EXISTING AND VALID'."""
+        d = self._pan_api_data(obj)
+        return d.get('pan_status') or None
+
+    def get_pan_name_status(self, obj):
+        """Surepass data.name_status — 'MATCHING' or 'NON-MATCHING'."""
+        d = self._pan_api_data(obj)
+        return d.get('name_status') or None
+
+    def get_pan_dob_status(self, obj):
+        """Surepass data.dob_status — 'MATCHING' or 'NON-MATCHING'."""
+        d = self._pan_api_data(obj)
+        return d.get('dob_status') or None
+
+    def get_pan_aadhaar_seeding_status(self, obj):
+        """Surepass data.aadhaar_seeding_status — e.g. 'Operative PAN'."""
+        d = self._pan_api_data(obj)
+        return d.get('aadhaar_seeding_status') or None
 
 
 class KYCApprovalSerializer(serializers.Serializer):

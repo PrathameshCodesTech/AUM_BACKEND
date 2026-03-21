@@ -11,7 +11,7 @@ class AdminKYCUserSerializer(serializers.ModelSerializer):
     """Minimal user info for KYC list — includes legal identity fields"""
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'phone', 'first_name', 'last_name', 'legal_full_name', 'date_of_birth']
+        fields = ['id', 'username', 'email', 'phone', 'first_name', 'middle_name', 'last_name', 'legal_full_name', 'date_of_birth']
 
 
 class AdminKYCListSerializer(serializers.ModelSerializer):
@@ -24,19 +24,29 @@ class AdminKYCListSerializer(serializers.ModelSerializer):
             'id',
             'user',
             'status',
-            'aadhaar_verified',
-            'aadhaar_number',
+
+            # Aadhaar review-lock state (primary story for list)
+            'aadhaar_review_status',
+            'aadhaar_locked',
             'aadhaar_name',
-            'pan_verified',
-            'pan_number',
+            'aadhaar_number',
+
+            # PAN review-lock state (primary story for list)
+            'pan_review_status',
+            'pan_locked',
             'pan_name',
-            'pan_aadhaar_linked',
+            'pan_number',
+
+            # Bank
             'bank_verified',
             'bank_name',
             'account_number',
+
+            # Identity match (used for Aadhaar mismatch indicator)
             'name_match_score',
             'name_validation_status',
             'dob_validation_status',
+
             'created_at',
             'updated_at',
             'verified_at',
@@ -47,11 +57,15 @@ class AdminKYCDetailSerializer(serializers.ModelSerializer):
     """Detailed KYC info for admin review — includes identity comparison data"""
     user = AdminKYCUserSerializer(read_only=True)
     verified_by_name = serializers.CharField(source='verified_by.username', read_only=True)
+    aadhaar_locked_by_name = serializers.CharField(source='aadhaar_locked_by.username', read_only=True)
+    pan_locked_by_name = serializers.CharField(source='pan_locked_by.username', read_only=True)
 
     # Profile identity derived from user model
     profile_identity = serializers.SerializerMethodField()
     # Sanitized Aadhaar provider response (no full Aadhaar number)
     sanitized_aadhaar_response = serializers.SerializerMethodField()
+    # PAN provider match evidence (name_status, dob_status, sanitized payload)
+    pan_review_evidence = serializers.SerializerMethodField()
 
     class Meta:
         model = KYC
@@ -74,6 +88,13 @@ class AdminKYCDetailSerializer(serializers.ModelSerializer):
             'aadhaar_front',
             'aadhaar_back',
 
+            # Aadhaar lock / review
+            'aadhaar_locked',
+            'aadhaar_review_status',
+            'aadhaar_locked_at',
+            'aadhaar_locked_by_name',
+            'aadhaar_review_note',
+
             # Identity validation results
             'name_match_score',
             'name_validation_status',
@@ -89,6 +110,13 @@ class AdminKYCDetailSerializer(serializers.ModelSerializer):
             'pan_verified_at',
             'pan_aadhaar_linked',
             'pan_document',
+
+            # PAN lock / review
+            'pan_locked',
+            'pan_review_status',
+            'pan_locked_at',
+            'pan_locked_by_name',
+            'pan_review_note',
 
             # Bank
             'bank_name',
@@ -110,6 +138,7 @@ class AdminKYCDetailSerializer(serializers.ModelSerializer):
 
             # Sanitized provider payloads
             'sanitized_aadhaar_response',
+            'pan_review_evidence',
 
             # Status
             'verified_at',
@@ -127,9 +156,40 @@ class AdminKYCDetailSerializer(serializers.ModelSerializer):
         return {
             'legal_full_name': u.legal_full_name or '',
             'first_name':      u.first_name or '',
+            'middle_name':     getattr(u, 'middle_name', '') or '',
             'last_name':       u.last_name or '',
             'date_of_birth':   str(u.date_of_birth) if u.date_of_birth else None,
         }
+
+    def get_pan_review_evidence(self, obj):
+        """
+        PAN provider match evidence for admin review.
+        Extracts name_status and dob_status from the stored pan_api_response,
+        plus a sanitized copy of the payload (no full PAN number beyond what's
+        already stored in pan_number).
+        """
+        raw = obj.pan_api_response
+        if not raw or not isinstance(raw, dict):
+            return None
+
+        data = raw.get('data', raw)  # Surepass wraps results in 'data'
+        if not isinstance(data, dict):
+            data = raw
+
+        evidence = {
+            'pan_provider_status':    data.get('pan_status')              or raw.get('pan_status')              or None,
+            'name_status':            data.get('name_status')             or raw.get('name_status'),
+            'dob_status':             data.get('dob_status')              or raw.get('dob_status'),
+            'aadhaar_seeding_status': data.get('aadhaar_seeding_status')  or raw.get('aadhaar_seeding_status')  or None,
+            'pan_name':               data.get('name')                    or raw.get('name') or obj.pan_name or None,
+            'pan_dob':                data.get('dob')                     or raw.get('dob')  or None,
+            'pan_type':               data.get('pan_type')                or raw.get('pan_type') or None,
+        }
+        # Include sanitized raw payload for advanced review (strip nothing sensitive
+        # since PAN number is already stored separately and raw payload has names/dob only)
+        OMIT = {'pan_number', 'id_number'}
+        evidence['sanitized_payload'] = {k: v for k, v in data.items() if k not in OMIT}
+        return evidence
 
     def get_sanitized_aadhaar_response(self, obj):
         """
