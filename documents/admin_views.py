@@ -434,7 +434,7 @@ class AdminESignRequestView(APIView):
             except Exception:
                 signer_name = target_user.legal_full_name or ''
             if not signer_name:
-                entry.update({'status': 'error', 'message': 'User has no verified legal name. Ask them to complete their profile (first/last name as per Aadhaar).'})
+                entry.update({'status': 'error', 'message': 'No signer legal name: Aadhaar name is missing and legal full name is blank. Admin can set first/last name via the user edit panel to fix this.'})
                 results.append(entry)
                 skipped_count += 1
                 continue

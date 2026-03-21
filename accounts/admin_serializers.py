@@ -289,13 +289,23 @@ class AdminKYCActionSerializer(serializers.Serializer):
         return attrs
 
 class UserUpdateSerializer(serializers.ModelSerializer):
-    """Admin-only: update user with privileged fields."""
+    """Admin-only: update user with privileged fields.
+
+    Mirrors CompleteProfileSerializer identity logic:
+    - derives legal_full_name from first/middle/last name automatically
+    - respects aadhaar_locked: identity fields cannot be changed after lock
+    """
+    middle_name     = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    legal_full_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
     class Meta:
         model = User
         fields = [
             'id',
             'first_name',
+            'middle_name',
             'last_name',
+            'legal_full_name',
             'username',
             'email',
             'phone',
@@ -311,6 +321,57 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'blocked_reason',
         ]
         read_only_fields = ['is_verified', 'is_suspended', 'is_blocked']
+
+    def update(self, instance, validated_data):
+        # ── Derive canonical legal_full_name from split fields ──────────────
+        new_first  = validated_data.get('first_name',  instance.first_name or '').strip()
+        new_middle = validated_data.get('middle_name', getattr(instance, 'middle_name', '') or '').strip()
+        new_last   = validated_data.get('last_name',   instance.last_name or '').strip()
+        derived_legal = ' '.join(filter(None, [new_first, new_middle, new_last])).strip()
+        if not derived_legal:
+            derived_legal = (validated_data.get('legal_full_name') or '').strip()
+
+        # ── Identity field lock — consistent with normal profile serializer ──
+        try:
+            from compliance.models import KYC
+            kyc = KYC.objects.get(user=instance)
+            if kyc.aadhaar_locked:
+                locked = []
+                new_dob = validated_data.get('date_of_birth')
+                if derived_legal and derived_legal != (instance.legal_full_name or ''):
+                    locked.extend(['first_name', 'middle_name', 'last_name', 'legal_full_name'])
+                if new_dob and new_dob != instance.date_of_birth:
+                    locked.append('date_of_birth')
+                if locked:
+                    raise serializers.ValidationError({
+                        f: "Cannot change this field after Aadhaar has been approved and locked. "
+                           "Use the admin KYC unlock flow if a genuine correction is needed."
+                        for f in ['first_name', 'middle_name', 'last_name', 'legal_full_name', 'date_of_birth']
+                        if f in locked
+                    })
+        except serializers.ValidationError:
+            raise
+        except Exception:
+            pass  # KYC.DoesNotExist or import error — allow update
+
+        # ── Persist all provided fields ──────────────────────────────────────
+        for field in ['username', 'email', 'phone', 'date_of_birth', 'is_indian',
+                      'role', 'profile_completed', 'kyc_status', 'suspended_reason', 'blocked_reason']:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+
+        # Identity split fields
+        if new_first:
+            instance.first_name = new_first
+        instance.middle_name = new_middle  # always save (can be blank)
+        if new_last:
+            instance.last_name = new_last
+        # Canonical compliance field — always derived from split names when available
+        if derived_legal:
+            instance.legal_full_name = derived_legal
+
+        instance.save()
+        return instance
 
 
 def generate_unique_username(first_name):
