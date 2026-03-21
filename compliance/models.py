@@ -86,6 +86,46 @@ class KYC(TimestampedModel, SoftDeleteModel):
     pan_last_retry_at = models.DateTimeField(null=True, blank=True)
 
 
+    # Aadhaar review and lock
+    AADHAAR_REVIEW_CHOICES = [
+        ('not_started', 'Not Started'),
+        ('submitted', 'Submitted'),
+        ('verified_unlocked', 'Verified (Unlocked)'),
+        ('approved_locked', 'Approved & Locked'),
+        ('rejected', 'Rejected'),
+        ('needs_retry', 'Needs Retry'),
+    ]
+    aadhaar_review_status = models.CharField(
+        max_length=20, choices=AADHAAR_REVIEW_CHOICES, default='not_started'
+    )
+    aadhaar_locked = models.BooleanField(default=False)
+    aadhaar_locked_at = models.DateTimeField(null=True, blank=True)
+    aadhaar_locked_by = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='aadhaar_locked_kycs'
+    )
+    aadhaar_review_note = models.TextField(blank=True)
+
+    # PAN review and lock
+    PAN_REVIEW_CHOICES = [
+        ('not_started', 'Not Started'),
+        ('submitted', 'Submitted'),
+        ('verified_unlocked', 'Verified (Unlocked)'),
+        ('approved_locked', 'Approved & Locked'),
+        ('rejected', 'Rejected'),
+        ('needs_retry', 'Needs Retry'),
+    ]
+    pan_review_status = models.CharField(
+        max_length=20, choices=PAN_REVIEW_CHOICES, default='not_started'
+    )
+    pan_locked = models.BooleanField(default=False)
+    pan_locked_at = models.DateTimeField(null=True, blank=True)
+    pan_locked_by = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pan_locked_kycs'
+    )
+    pan_review_note = models.TextField(blank=True)
+
     name_validation_status = models.CharField(
         max_length=20,
         choices=[
@@ -101,7 +141,8 @@ class KYC(TimestampedModel, SoftDeleteModel):
         choices=[
             ('pending', 'Pending'),
             ('passed', 'Passed'),
-            ('failed', 'Failed')
+            ('failed', 'Failed'),
+            ('needs_review', 'Needs Manual Review'),
         ],
         default='pending'
     )

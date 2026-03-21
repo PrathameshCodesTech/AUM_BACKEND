@@ -136,6 +136,8 @@ class User(AbstractUser, TimestampedModel):
     is_indian = models.BooleanField(default=True)
     profile_completed = models.BooleanField(default=False)
 
+    middle_name = models.CharField(max_length=150, blank=True, default='')
+
     # Legal identity — used as compliance name source (Aadhaar/PAN matching)
     legal_full_name = models.CharField(
         max_length=255,

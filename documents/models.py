@@ -139,6 +139,26 @@ class DocumentESignRequest(TimestampedModel):
         help_text="Explanation when identity_check_status is mismatch or unverified"
     )
 
+    # Signature placement fields — configurable by admin at eSign creation time
+    PLACEMENT_MODE_CHOICES = [
+        ('single', 'Single Page'),
+        ('all_pages', 'All Pages'),
+        ('selected_pages', 'Selected Pages'),
+        ('manual', 'Manual Per Page'),
+    ]
+    placement_mode = models.CharField(
+        max_length=20, choices=PLACEMENT_MODE_CHOICES, default='single',
+        help_text='How signature positions are distributed across pages'
+    )
+    signature_positions = models.JSONField(
+        default=dict, blank=True,
+        help_text='Page → list of {x, y} dicts. E.g. {"1": [{"x": 10, "y": 20}]}'
+    )
+    pdf_page_count = models.IntegerField(
+        null=True, blank=True,
+        help_text='Number of pages in the document (detected at eSign creation time)'
+    )
+
     class Meta:
         ordering = ['-created_at']
 
