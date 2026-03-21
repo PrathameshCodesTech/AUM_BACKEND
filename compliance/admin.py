@@ -282,6 +282,12 @@ class KYCAdmin(admin.ModelAdmin):
         "validation_errors_display",
         # Extra info
         "completion_percentage",
+        # Aadhaar lock
+        "aadhaar_locked_at",
+        "aadhaar_locked_by",
+        # PAN lock
+        "pan_locked_at",
+        "pan_locked_by",
     ]
 
     fieldsets = (
@@ -311,6 +317,18 @@ class KYCAdmin(admin.ModelAdmin):
             },
         ),
         (
+            "Aadhaar Review & Lock",
+            {
+                "fields": (
+                    "aadhaar_review_status",
+                    "aadhaar_locked",
+                    "aadhaar_locked_at",
+                    "aadhaar_locked_by",
+                    "aadhaar_review_note",
+                ),
+            },
+        ),
+        (
             "Aadhaar Details",
             {
                 "fields": (
@@ -336,6 +354,18 @@ class KYCAdmin(admin.ModelAdmin):
             {
                 "fields": ("aadhaar_api_response_display",),
                 "classes": ("collapse",),
+            },
+        ),
+        (
+            "PAN Review & Lock",
+            {
+                "fields": (
+                    "pan_review_status",
+                    "pan_locked",
+                    "pan_locked_at",
+                    "pan_locked_by",
+                    "pan_review_note",
+                ),
             },
         ),
         (
@@ -417,7 +447,7 @@ class KYCAdmin(admin.ModelAdmin):
         ),
     )
 
-    autocomplete_fields = ["user", "verified_by", "deleted_by"]
+    autocomplete_fields = ["user", "verified_by", "deleted_by", "aadhaar_locked_by", "pan_locked_by"]
 
     # Use pretty JSON for all JSONField form inputs
     formfield_overrides = {
@@ -435,7 +465,8 @@ class KYCAdmin(admin.ModelAdmin):
         u = obj.user
 
         # Profile identity
-        declared_name = u.legal_full_name or f"{u.first_name or ''} {u.last_name or ''}".strip() or "—"
+        parts = [u.first_name or '', getattr(u, 'middle_name', '') or '', u.last_name or '']
+        declared_name = u.legal_full_name or " ".join(p for p in parts if p).strip() or "—"
         declared_dob = str(u.date_of_birth) if u.date_of_birth else "—"
 
         # Provider-returned identity

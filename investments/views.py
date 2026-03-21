@@ -147,27 +147,27 @@ class CreateInvestmentView(APIView):
                 logger.info(f"✅ User using correct CP code: {referral_code}")
         
         # ============================================
-        # KYC GATE: Aadhaar + PAN must be verified
+        # KYC GATE: Aadhaar + PAN must be admin-approved and locked
         # ============================================
         from compliance.models import KYC
         try:
             kyc = KYC.objects.get(user=request.user)
-            if not kyc.aadhaar_verified or not kyc.pan_verified:
+            if not kyc.aadhaar_locked or not kyc.pan_locked:
                 missing = []
-                if not kyc.aadhaar_verified:
+                if not kyc.aadhaar_locked:
                     missing.append('Aadhaar')
-                if not kyc.pan_verified:
+                if not kyc.pan_locked:
                     missing.append('PAN')
                 return Response({
                     'success': False,
-                    'error': 'kyc_incomplete',
-                    'message': f'Please complete KYC verification before investing. Missing: {", ".join(missing)}.'
+                    'error': 'kyc_not_approved',
+                    'message': f'Your Aadhaar and PAN must be approved by admin before you can invest. Pending approval: {", ".join(missing)}.'
                 }, status=status.HTTP_403_FORBIDDEN)
         except KYC.DoesNotExist:
             return Response({
                 'success': False,
-                'error': 'kyc_incomplete',
-                'message': 'Please complete KYC verification (Aadhaar + PAN) before investing.'
+                'error': 'kyc_not_approved',
+                'message': 'Your Aadhaar and PAN must be approved by admin before you can invest.'
             }, status=status.HTTP_403_FORBIDDEN)
 
         # ============================================

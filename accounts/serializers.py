@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 class SendOTPSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15, required=True)
     is_signup = serializers.BooleanField(required=False, default=False)
-    name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
 
     def validate_phone(self, value):
@@ -54,7 +53,6 @@ class SendOTPSerializer(serializers.Serializer):
     def validate(self, data):
         phone = data.get('phone')
         is_signup = data.get('is_signup', False)
-        name = data.get('name', '')
         email = data.get('email', '')
 
         # Check if user exists
@@ -67,14 +65,6 @@ class SendOTPSerializer(serializers.Serializer):
                     'error': 'phone_exists',
                     'message': 'This phone number is already registered. Please login instead.'
                 })
-            
-            # For signup, name and email are required
-            if not name or not name.strip():
-                raise serializers.ValidationError({
-                    'error': 'name_required',
-                    'message': 'Name is required for signup.'
-                })
-            
             if not email or not email.strip():
                 raise serializers.ValidationError({
                     'error': 'email_required',
@@ -101,7 +91,6 @@ class SendOTPSerializer(serializers.Serializer):
         
         phone = self.validated_data['phone']
         is_signup = self.validated_data.get('is_signup', False)
-        name = self.validated_data.get('name', '')
         email = self.validated_data.get('email', '')
         
         # Get IP address
@@ -137,6 +126,14 @@ class SendOTPSerializer(serializers.Serializer):
             # OTP still valid - resend same OTP
             logger.info(f"Resending existing OTP for {phone}")
             otp_code = existing_otp.otp_code
+
+            # Keep signup cache in sync if the user changes email before verifying OTP.
+            if is_signup and email:
+                cache.set(
+                    f"signup_data_{phone}",
+                    {'email': email, 'is_signup': True},
+                    timeout=300,
+                )
             
             # Send SMS with existing OTP
             sms_service = RouteMobileSMS()
@@ -203,10 +200,9 @@ class SendOTPSerializer(serializers.Serializer):
         # ============================================
         # STORE SIGNUP DATA IN CACHE (TEMPORARY)
         # ============================================
-        if is_signup and (name or email):
+        if is_signup and email:
             from django.core.cache import cache
             signup_data = {
-                'name': name,
                 'email': email,
                 'is_signup': True
             }
@@ -358,7 +354,6 @@ class VerifyOTPSerializer(serializers.Serializer):
         from django.core.cache import cache
         signup_data = cache.get(f"signup_data_{phone}", {})
         is_signup = signup_data.get('is_signup', False)
-        name = signup_data.get('name', '')
         email = signup_data.get('email', '')
         
         # Get referral codes from context
@@ -386,9 +381,11 @@ class VerifyOTPSerializer(serializers.Serializer):
                 })
             
             # Create new user (signup flow)
+            digits_only = ''.join(ch for ch in phone if ch.isdigit())
+            default_username = f"user_{digits_only[-10:]}" if digits_only else "user_new"
             user = User.objects.create(
                 phone=phone,
-                username=name if name else phone,
+                username=default_username,  # display/preferred name set later in Complete Profile
                 email=email if email else '',
                 phone_verified=True,
                 is_active=True,
@@ -423,7 +420,7 @@ class VerifyOTPSerializer(serializers.Serializer):
                     
                     # Prepare email parameters
                     print("🟢 Import successful!")
-                    user_name = name if name else user.username
+                    user_name = user.username
                     print(f"🟢 user_name = {user_name}")
                     login_link = f"{settings.FRONTEND_BASE_URL}/login"  # You'll need to add FRONTEND_URL to settings
                     
@@ -569,7 +566,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'email', 'phone', 'phone_verified',
-            'first_name', 'last_name', 'legal_full_name',
+            'first_name', 'middle_name', 'last_name', 'legal_full_name',
             'date_of_birth', 'avatar',
             'kyc_status', 'role', 'permissions',
             'is_indian',
@@ -607,6 +604,7 @@ class CompleteProfileSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150, required=True)
     # Display name only — not used for compliance
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    middle_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     email = serializers.EmailField(required=True)
     date_of_birth = serializers.DateField(required=True)
@@ -634,34 +632,36 @@ class CompleteProfileSerializer(serializers.Serializer):
 
     def update(self, instance, validated_data):
         # ── Derive canonical legal_full_name from split fields ──────────────
-        new_first = validated_data.get('first_name', '').strip()
-        new_last  = validated_data.get('last_name', '').strip()
-        derived_legal = f"{new_first} {new_last}".strip() if (new_first or new_last) else ''
+        new_first  = validated_data.get('first_name', '').strip()
+        new_middle = validated_data.get('middle_name', '').strip()
+        new_last   = validated_data.get('last_name', '').strip()
+        # Build legal name: first [middle] last, collapsing extra spaces
+        derived_legal = ' '.join(filter(None, [new_first, new_middle, new_last])).strip()
         # Fall back to explicit legal_full_name if split fields not provided
         if not derived_legal:
             derived_legal = (validated_data.get('legal_full_name') or '').strip()
 
-        # ── Identity field lock after Aadhaar verification ──────────────────
-        # Locked fields: first_name, last_name, legal_full_name, date_of_birth
+        # ── Identity field lock after Aadhaar locked by admin ───────────────
+        # Locked fields: first_name, middle_name, last_name, legal_full_name, date_of_birth
         try:
             from compliance.models import KYC
             kyc = KYC.objects.get(user=instance)
-            if kyc.aadhaar_verified:
+            if kyc.aadhaar_locked:
                 locked = []
                 new_dob = validated_data.get('date_of_birth')
                 if derived_legal and derived_legal != (instance.legal_full_name or ''):
-                    locked.extend(['first_name', 'last_name', 'legal_full_name'])
+                    locked.extend(['first_name', 'middle_name', 'last_name', 'legal_full_name'])
                 if new_dob and new_dob != instance.date_of_birth:
                     locked.append('date_of_birth')
                 if locked:
                     logger.warning(
-                        "IDENTITY_LOCK: user %s attempted to change %s after Aadhaar verification",
+                        "IDENTITY_LOCK: user %s attempted to change %s after Aadhaar locked",
                         instance.id, locked,
                     )
                     raise serializers.ValidationError({
-                        f: "Cannot change this field after Aadhaar has been verified. "
+                        f: "Cannot change this field after Aadhaar has been approved and locked by admin. "
                            "Contact support if an update is genuinely needed."
-                        for f in ['first_name', 'last_name', 'legal_full_name', 'date_of_birth']
+                        for f in ['first_name', 'middle_name', 'last_name', 'legal_full_name', 'date_of_birth']
                         if f in locked
                     })
         except Exception as exc:
@@ -678,6 +678,8 @@ class CompleteProfileSerializer(serializers.Serializer):
         # Legal identity split fields
         if new_first:
             instance.first_name = new_first
+        # Always save middle_name (can be blank)
+        instance.middle_name = new_middle
         if new_last:
             instance.last_name = new_last
         # Canonical compliance field: always derive from split fields when available

@@ -11,7 +11,6 @@ from .views import (
     AadhaarPDFUploadView,
     # PAN
     PANVerifyView,
-    
     # Bank
     BankVerifyView,
     # User KYC
@@ -21,7 +20,9 @@ from .views import (
     PendingKYCListView,
     KYCApprovalView,
     AllKYCListView,
- 
+    KYCDetailView,
+    AdminAadhaarLockView,
+    AdminPANLockView,
 )
 
 app_name = 'compliance'
@@ -77,7 +78,16 @@ urlpatterns = [
     path('admin/all/',
          AllKYCListView.as_view(),
          name='admin-all-kyc'),
+    path('admin/<int:kyc_id>/',
+         KYCDetailView.as_view(),
+         name='admin-kyc-detail'),
     path('admin/<int:kyc_id>/action/',
          KYCApprovalView.as_view(),
          name='admin-kyc-action'),
+    path('admin/<int:kyc_id>/aadhaar/lock/',
+         AdminAadhaarLockView.as_view(),
+         name='admin-aadhaar-lock'),
+    path('admin/<int:kyc_id>/pan/lock/',
+         AdminPANLockView.as_view(),
+         name='admin-pan-lock'),
 ]

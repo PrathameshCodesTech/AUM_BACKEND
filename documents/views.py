@@ -89,6 +89,8 @@ class UserESignListView(APIView):
                 'investment_id': req.investment_id,
                 'status': req.status,
                 'sign_url': req.surepass_sign_url if req.status == 'initiated' else None,
+                'identity_check_status': req.identity_check_status,
+                'identity_mismatch_reason': req.identity_mismatch_reason if req.status in ('identity_mismatch', 'needs_review') else None,
                 'completed_at': req.completed_at,
                 'created_at': req.created_at,
             })

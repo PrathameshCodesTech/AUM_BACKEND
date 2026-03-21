@@ -67,15 +67,16 @@ class UserAdmin(BaseUserAdmin):
 
     # List display
     list_display = [
-        'username',
-        'legal_full_name',
-        'email',
+        'username_display',
+        'legal_full_name_display',
+        'email_display',
         'phone',
         'role_badge',
         'kyc_badge',
         'status_badge',
         'date_joined',
     ]
+    list_display_links = ['username_display']
 
     list_filter = [
         'role',
@@ -108,10 +109,11 @@ class UserAdmin(BaseUserAdmin):
         ('Legal Identity', {
             'description': (
                 'Canonical compliance identity. '
-                'legal_full_name is derived from first_name + last_name and is locked after Aadhaar verification.'
+                'legal_full_name is derived from first_name + middle_name + last_name and is locked after Aadhaar verification.'
             ),
             'fields': (
                 'first_name',
+                'middle_name',
                 'last_name',
                 'legal_full_name',
                 'date_of_birth',
@@ -183,6 +185,31 @@ class UserAdmin(BaseUserAdmin):
         'blocked_at',
         'kyc_link',
     ]
+
+    def _truncate_cell(self, value, max_width_px=180):
+        value = value or '—'
+        return format_html(
+            '<span style="display:inline-block; max-width:{}px; white-space:nowrap; '
+            'overflow:hidden; text-overflow:ellipsis; vertical-align:bottom;" title="{}">{}</span>',
+            max_width_px,
+            value,
+            value,
+        )
+
+    def username_display(self, obj):
+        return self._truncate_cell(obj.username, 150)
+    username_display.short_description = 'Username'
+    username_display.admin_order_field = 'username'
+
+    def legal_full_name_display(self, obj):
+        return self._truncate_cell(obj.legal_full_name, 170)
+    legal_full_name_display.short_description = 'Legal Full Name'
+    legal_full_name_display.admin_order_field = 'legal_full_name'
+
+    def email_display(self, obj):
+        return self._truncate_cell(obj.email, 210)
+    email_display.short_description = 'Email Address'
+    email_display.admin_order_field = 'email'
 
     # Custom badge methods
     def role_badge(self, obj):

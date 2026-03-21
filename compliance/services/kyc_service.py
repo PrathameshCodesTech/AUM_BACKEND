@@ -473,21 +473,14 @@ class SurepassKYC:
             dob_status = data.get('dob_status', '')
             pan_status = data.get('pan_status', '')
 
-            # Success only when both name and DOB confirmed matching by Surepass
-            if name_status != 'MATCHING' or dob_status != 'MATCHING':
-                mismatch_parts = []
-                if name_status != 'MATCHING':
-                    mismatch_parts.append(f'name ({name_status or "NOT_MATCHING"})')
-                if dob_status != 'MATCHING':
-                    mismatch_parts.append(f'date of birth ({dob_status or "NOT_MATCHING"})')
-                error_msg = (
-                    f"PAN details do not match: {', '.join(mismatch_parts)}. "
-                    f"Please ensure your PAN is linked to your Aadhaar."
-                )
-                logger.error(f"❌ PAN mismatch: name_status={name_status}, dob_status={dob_status}")
-                return {'success': False, 'error': error_msg, 'data': data}
+            # Log any mismatches as informational — they do NOT block the flow.
+            # Admin reviews the returned PAN data and decides to approve/lock, reject, or retry.
+            if name_status and name_status != 'MATCHING':
+                logger.warning(f"⚠️  PAN name_status={name_status} for {pan_number} — admin will review")
+            if dob_status and dob_status != 'MATCHING':
+                logger.warning(f"⚠️  PAN dob_status={dob_status} for {pan_number} — admin will review")
 
-            logger.info(f"✅ PAN verified: {data.get('name', 'Unknown')}")
+            logger.info(f"✅ PAN data received for review: {data.get('name', 'Unknown')} | name_status={name_status} | dob_status={dob_status}")
             return {
                 'success': True,
                 'data': {
@@ -499,7 +492,7 @@ class SurepassKYC:
                     'dob_status': dob_status,
                     'aadhaar_seeding_status': data.get('aadhaar_seeding_status', ''),
                 },
-                'message': 'PAN verified successfully',
+                'message': 'PAN data received for admin review',
             }
 
         except requests.exceptions.HTTPError as e:
