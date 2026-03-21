@@ -141,6 +141,141 @@ class AdminPropertiesDropdownView(APIView):
 # eSign Admin Endpoints
 # ============================================================
 
+
+def _parse_coord(val, field_name):
+    """
+    Parse a coordinate value in integer PDF-space units (points).
+
+    Surepass config.positions expects integer x/y coordinates in PDF point space
+    (origin at bottom-left per PDF standard, 72 DPI baseline).
+    The frontend converts editor preview percentages to PDF integers before sending.
+
+    Validates: must be a non-negative number. No upper bound — valid values depend
+    on actual page dimensions (e.g. 595 for A4 width, 842 for A4 height).
+    Returns an integer.
+    """
+    try:
+        fval = float(val)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{field_name}' must be a number, got: {val!r}")
+    if fval < 0:
+        raise ValueError(f"'{field_name}' must be non-negative, got: {fval}")
+    return int(round(fval))
+
+
+def _parse_page(val, safe_page_count, context=''):
+    """
+    Parse and validate a page number. Raises ValueError if out of range.
+    """
+    try:
+        pg = int(val)
+    except (TypeError, ValueError):
+        raise ValueError(f"Page number must be an integer{' in ' + context if context else ''}, got: {val!r}")
+    if not (1 <= pg <= safe_page_count):
+        raise ValueError(
+            f"Page {pg} is out of range{' in ' + context if context else ''} "
+            f"(document has {safe_page_count} page{'s' if safe_page_count != 1 else ''})."
+        )
+    return pg
+
+
+def _parse_box_list(positions_input, context):
+    """
+    Parse a multi-box positions payload into a list of clean {x, y} dicts.
+
+    Accepts either:
+      - single-box legacy: the positions_input dict itself contains 'x' and 'y'
+      - multi-box extended: positions_input contains 'positions': [{x, y}, ...]
+
+    Raises ValueError on invalid data.
+    """
+    raw_list = positions_input.get('positions')
+    if raw_list is not None:
+        # Multi-box path: {"positions": [{x, y}, ...]}
+        if not isinstance(raw_list, list) or not raw_list:
+            raise ValueError(f"{context}: 'positions' must be a non-empty list.")
+        result = []
+        for i, c in enumerate(raw_list):
+            if not isinstance(c, dict):
+                raise ValueError(f"{context}: positions[{i}] must be a dict with 'x' and 'y'.")
+            result.append({
+                "x": _parse_coord(c.get('x', 10), f'{context} positions[{i}].x'),
+                "y": _parse_coord(c.get('y', 20), f'{context} positions[{i}].y'),
+            })
+        return result
+    else:
+        # Single-box legacy path: {"x": int, "y": int}
+        return [{
+            "x": _parse_coord(positions_input.get('x', 10), f'{context} x'),
+            "y": _parse_coord(positions_input.get('y', 20), f'{context} y'),
+        }]
+
+
+def _build_positions(mode, positions_input, page_count):
+    """
+    Build the Surepass config.positions dict from placement config.
+
+    Coordinate system: x/y are INTEGER PDF-space coordinates (points).
+    The frontend (ESignPlacementModal) converts admin drag positions from
+    editor preview percentages to integer PDF points before sending, using
+    actual PDF page dimensions captured from react-pdf's page.view.
+    Origin is bottom-left (PDF standard). This backend is validation +
+    forwarding only — it does NOT re-interpret or re-convert coordinates.
+
+    positions_input format (single-box legacy — backward-compatible):
+      single:          {"page": int, "x": int, "y": int}
+      all_pages:       {"x": int, "y": int}
+      selected_pages:  {"pages": [int, ...], "x": int, "y": int}
+      manual:          {page_str: [{"x": int, "y": int}, ...]}
+
+    positions_input format (multi-box extended):
+      single:          {"page": int, "positions": [{"x": int, "y": int}, ...]}
+      all_pages:       {"positions": [{"x": int, "y": int}, ...]}
+      selected_pages:  {"pages": [int, ...], "positions": [{"x": int, "y": int}, ...]}
+      manual:          {page_str: [{"x": int, "y": int}, ...]}  (unchanged)
+
+    Raises ValueError for any invalid configuration: wrong types, negative
+    coordinates, out-of-range page numbers, or empty page lists.
+    """
+    safe_page_count = max(1, int(page_count or 1))
+
+    if mode == 'all_pages':
+        boxes = _parse_box_list(positions_input, context='all_pages')
+        return {str(p): boxes for p in range(1, safe_page_count + 1)}
+
+    elif mode == 'selected_pages':
+        pages = positions_input.get('pages', [])
+        if not pages:
+            raise ValueError("selected_pages mode requires at least one page number.")
+        parsed = [_parse_page(p, safe_page_count, context='selected_pages') for p in pages]
+        boxes = _parse_box_list(positions_input, context='selected_pages')
+        return {str(p): boxes for p in parsed}
+
+    elif mode == 'manual':
+        if not isinstance(positions_input, dict) or not positions_input:
+            raise ValueError("manual mode requires at least one page placement.")
+        result = {}
+        for pg_str, coords in positions_input.items():
+            pg = _parse_page(pg_str, safe_page_count, context='manual')
+            if not isinstance(coords, list) or not coords:
+                raise ValueError(f"manual mode: page {pg} must have a non-empty list of coordinate objects.")
+            clean = []
+            for i, c in enumerate(coords):
+                if not isinstance(c, dict):
+                    raise ValueError(f"manual mode: page {pg} position {i} must be a dict with 'x' and 'y'.")
+                clean.append({
+                    "x": _parse_coord(c.get('x', 10), f'page {pg} x'),
+                    "y": _parse_coord(c.get('y', 20), f'page {pg} y'),
+                })
+            result[str(pg)] = clean
+        return result
+
+    else:  # single (default)
+        page = _parse_page(positions_input.get('page', 1), safe_page_count, context='single')
+        boxes = _parse_box_list(positions_input, context='single')
+        return {str(page): boxes}
+
+
 class AdminESignRequestView(APIView):
     """
     POST /api/admin/documents/esign/request/
@@ -156,6 +291,34 @@ class AdminESignRequestView(APIView):
 
         document_id = request.data.get('document_id')
         investment_id = request.data.get('investment_id')
+
+        placement_mode = request.data.get('placement_mode', 'single')
+        signature_positions_input = request.data.get('signature_positions', {})
+
+        # Validate placement_mode
+        valid_modes = ('single', 'all_pages', 'selected_pages', 'manual')
+        if placement_mode not in valid_modes:
+            return Response(
+                {'success': False, 'message': f"Invalid placement_mode '{placement_mode}'. Must be one of: {', '.join(valid_modes)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate signature_positions shape matches placement_mode
+        if not isinstance(signature_positions_input, dict):
+            return Response(
+                {'success': False, 'message': 'signature_positions must be a JSON object.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if placement_mode == 'selected_pages' and not isinstance(signature_positions_input.get('pages'), list):
+            return Response(
+                {'success': False, 'message': 'selected_pages mode requires signature_positions.pages to be a list of page numbers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if placement_mode == 'manual' and not signature_positions_input:
+            return Response(
+                {'success': False, 'message': 'manual mode requires at least one entry in signature_positions.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Accept both single target_user_id (legacy) and target_user_ids array
         raw_ids = request.data.get('target_user_ids') or request.data.get('target_user_id')
@@ -202,6 +365,21 @@ class AdminESignRequestView(APIView):
                 {'success': False, 'message': 'Could not read document file.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        # Detect page count for placement config
+        pdf_page_count = None
+        try:
+            import PyPDF2
+            import io
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            pdf_page_count = len(reader.pages)
+        except Exception:
+            pdf_page_count = 1
+
+        try:
+            positions = _build_positions(placement_mode, signature_positions_input, pdf_page_count)
+        except ValueError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         service = SurepassESign()
         results = []
@@ -263,7 +441,7 @@ class AdminESignRequestView(APIView):
             signer_phone = getattr(target_user, 'phone', '') or ''
             signer_email = target_user.email or ''
 
-            init_result = service.initialize(signer_name, signer_phone, signer_email)
+            init_result = service.initialize(signer_name, signer_phone, signer_email, positions=positions)
             if not init_result.get('success'):
                 entry.update({'status': 'error', 'message': f"eSign init failed: {init_result.get('error')}"})
                 results.append(entry)
@@ -304,6 +482,9 @@ class AdminESignRequestView(APIView):
                 surepass_sign_url=sign_url,
                 status='initiated',
                 raw_init_payload=init_result,
+                placement_mode=placement_mode,
+                signature_positions=positions,
+                pdf_page_count=pdf_page_count,
             )
             entry.update({
                 'status': 'created',
@@ -370,6 +551,9 @@ class AdminESignListView(APIView):
                 'identity_check_status': req.identity_check_status,
                 'signer_name_returned': req.signer_name_returned or None,
                 'identity_mismatch_reason': req.identity_mismatch_reason or None,
+                'placement_mode': req.placement_mode,
+                'signature_positions': req.signature_positions,
+                'pdf_page_count': req.pdf_page_count,
             })
 
         return Response({'success': True, 'data': data})
@@ -552,3 +736,28 @@ class AdminESignApproveView(APIView):
             'message': 'eSign request approved and marked as signed.',
             'esign_request_id': esign_req.id,
         })
+
+
+class AdminDocumentPageCountView(APIView):
+    """
+    GET /api/admin/documents/<doc_id>/page-count/
+    Returns the number of pages in the document PDF.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request, doc_id):
+        try:
+            doc = Document.objects.get(id=doc_id)
+        except Document.DoesNotExist:
+            return Response({'success': False, 'message': 'Document not found.'}, status=404)
+
+        try:
+            import PyPDF2
+            with doc.file.open('rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                page_count = len(reader.pages)
+            return Response({'success': True, 'page_count': page_count})
+        except Exception as e:
+            logger.error("Page count error for doc %s: %s", doc_id, e)
+            # Return 1 as safe fallback — placement can still be configured
+            return Response({'success': True, 'page_count': 1, 'warning': 'Could not detect page count; defaulting to 1.'})
