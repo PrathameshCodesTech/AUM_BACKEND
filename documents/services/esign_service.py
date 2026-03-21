@@ -188,7 +188,7 @@ class SurepassESign:
             return digits[-10:]
         return digits
 
-    def initialize(self, signer_name: str, signer_phone: str, signer_email: str = "") -> dict:
+    def initialize(self, signer_name: str, signer_phone: str, signer_email: str = "", positions: dict = None) -> dict:
         """
         POST /api/v1/esign/initialize
         Returns: { success, data: { client_id, token, url } }
@@ -212,14 +212,7 @@ class SurepassESign:
             "config": {
                 "auth_mode": "1",
                 "reason": "Contract",
-                "positions": {
-                    "1": [
-                        {
-                            "x": 10,
-                            "y": 20,
-                        }
-                    ]
-                },
+                "positions": positions if positions else {"1": [{"x": 10, "y": 20}]},
             },
             "prefill_options": {
                 "full_name": signer_name,
